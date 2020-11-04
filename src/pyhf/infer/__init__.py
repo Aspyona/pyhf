@@ -14,6 +14,7 @@ def hypotest(
     qtilde=True,
     calctype="asymptotics",
     return_tail_probs=False,
+    return_CLsb=False,
     return_expected=False,
     return_expected_set=False,
     **kwargs,
@@ -159,10 +160,11 @@ def hypotest(
     )
 
     _returns = [CLs]
-    if return_tail_probs:
+    if return_tail_probs or return_CLsb:
         _returns.append([CLsb, CLb])
     if return_expected_set:
         CLs_exp = []
+        CLsb_exp = []
         for n_sigma in [2, 1, 0, -1, -2]:
 
             expected_bonly_teststat = b_only_distribution.expected_value(n_sigma)
@@ -171,9 +173,16 @@ def hypotest(
                 expected_bonly_teststat
             ) / b_only_distribution.pvalue(expected_bonly_teststat)
             CLs_exp.append(tensorlib.astensor(CLs))
+
+            CLsb = sig_plus_bkg_distribution.pvalue(expected_bonly_teststat)
+            CLsb_exp.append(tensorlib.astensor(CLsb))
         if return_expected:
             _returns.append(CLs_exp[2])
+            if return_CLsb:
+                _returns.append([CLsb_exp[2]])
         _returns.append(CLs_exp)
+        if return_CLsb:
+            _returns.append([CLsb_exp])
     elif return_expected:
         n_sigma = 0
         expected_bonly_teststat = b_only_distribution.expected_value(n_sigma)
@@ -181,7 +190,10 @@ def hypotest(
         CLs = sig_plus_bkg_distribution.pvalue(
             expected_bonly_teststat
         ) / b_only_distribution.pvalue(expected_bonly_teststat)
+        CLsb = sig_plus_bkg_distribution.pvalue(expected_bonly_teststat)
         _returns.append(tensorlib.astensor(CLs))
+        if return_CLsb:
+            _returns.append([CLsb])
     # Enforce a consistent return type of the observed CLs
     return tuple(_returns) if len(_returns) > 1 else _returns[0]
 

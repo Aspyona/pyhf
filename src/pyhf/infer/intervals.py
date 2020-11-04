@@ -9,7 +9,7 @@ def _interp(x, xp, fp):
     return tb.astensor(np.interp(x, xp, fp))
 
 
-def upperlimit(data, model, scan, level=0.05, return_results=False, **kwargs):
+def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=False, **kwargs):
     """
     Calculate an upper limit interval ``(0, poi_up)`` for a single
     Parameter of Interest (POI) using a fixed scan through POI-space.
@@ -50,16 +50,28 @@ def upperlimit(data, model, scan, level=0.05, return_results=False, **kwargs):
     """
     tb, _ = get_backend()
     results = [
-        hypotest(mu, data, model, qtilde=True, return_expected_set=True, **kwargs,) for mu in scan
+        hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True, **kwargs,) for mu in scan
     ]
     obs = tb.astensor([[r[0]] for r in results])
-    exp = tb.astensor([[r[1][idx] for idx in range(5)] for r in results])
+    exp = tb.astensor([[r[2][idx] for idx in range(5)] for r in results])
     result_arrary = tb.concatenate([obs, exp], axis=1).T
 
     # observed limit and the (0, +-1, +-2)sigma expected limits
     limits = [_interp(level, result_arrary[idx].tolist()[::-1], scan.tolist()[::-1]) for idx in range(6)]
     obs_limit, exp_limits = limits[0], limits[1:]
 
-    if return_results:
-        return obs_limit, exp_limits, (scan, results)
-    return obs_limit, exp_limits
+    if return_CLsb:
+        # same for CLsb
+        obs = tb.astensor([[r[1][0]] for r in results])
+        exp = tb.astensor([[r[3][0][idx] for idx in range(5)] for r in results])
+        result_arrary = tb.concatenate([obs, exp], axis=1).T
+        limits = [_interp(level, result_arrary[idx].tolist()[::-1], scan.tolist()[::-1]) for idx in range(6)]
+        obs_limit_CLsb, exp_limits_CLsb = limits[0], limits[1:]
+
+        if return_results:
+            return obs_limit, exp_limits, obs_limit_CLsb, exp_limits_CLsb, (scan, results)
+        return obs_limit, exp_limits, obs_limit_CLsb, exp_limits_CLsb
+    else:
+        if return_results:
+            return obs_limit, exp_limits, (scan, results)
+        return obs_limit, exp_limits
