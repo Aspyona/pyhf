@@ -7,9 +7,9 @@ hypotheses.
 
 Using the calculators hypothesis tests can then be performed.
 """
-from .mle import fixed_poi_fit
+from .mle import fixed_poi_fit, fit
 from .. import get_backend
-from .test_statistics import qmu, qmu_tilde
+from .test_statistics import qmu, qmu_tilde, tmu_tilde
 import tqdm
 
 
@@ -440,6 +440,9 @@ class EmpiricalDistribution(object):
             self.samples, tensorlib.normal_cdf(nsigma) * 100, interpolation="linear"
         )
 
+# import logging
+# log = logging.getLogger(__name__)
+
 
 class ToyCalculator(object):
     """The Toy-based Calculator."""
@@ -454,6 +457,8 @@ class ToyCalculator(object):
         qtilde=True,
         ntoys=2000,
         track_progress=True,
+        ttilde=False,
+        bootstrap=False,
     ):
         """
         Toy-based Calculator.
@@ -467,11 +472,18 @@ class ToyCalculator(object):
             qtilde (:obj:`bool`): When ``True`` perform the calculation using the alternative test statistic, :math:`\\tilde{q}`, as defined in Equation (62) of :xref:`arXiv:1007.1727`.
             ntoys (:obj:`int`): Number of toys to use (how many times to sample the underlying distributions)
             track_progress (:obj:`bool`): Whether to display the `tqdm` progress bar or not (outputs to `stderr`)
+            ttilde (:obj:`bool`): When ``True`` perform the calculation using the test statistic, :math:`\\tilde{t}`, as defined in Equation (40) of :xref:`arXiv:1007.1727`.
+            bootstrap (:obj:`bool`): When ``True`` perform the calculation using the parametric bootstrap method.
 
         Returns:
             ~pyhf.infer.calculators.ToyCalculator: The calculator for toy-based quantities.
 
         """
+        if qtilde and ttilde:  # use ttilde if both are set to true
+            qtilde = False
+            # log.warning(
+            #     'qtilde and ttilde flag set to true, continuing with ttilde'
+            # )
         self.ntoys = ntoys
         self.data = data
         self.pdf = pdf
@@ -479,6 +491,8 @@ class ToyCalculator(object):
         self.par_bounds = par_bounds or pdf.config.suggested_bounds()
         self.fixed_params = fixed_params or pdf.config.suggested_fixed()
         self.qtilde = qtilde
+        self.ttilde = ttilde
+        self.bootstrap = bootstrap
         self.track_progress = track_progress
 
     def distributions(self, poi_test, track_progress=None):
@@ -515,17 +529,29 @@ class ToyCalculator(object):
         tensorlib, _ = get_backend()
         sample_shape = (self.ntoys,)
 
-        signal_pars = self.pdf.config.suggested_init()
+        if self.bootstrap:
+            fixed = [True] * self.pdf.config.npars
+            fixed[self.pdf.config.poi_index] = False
+            params = fit(self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
+            signal_pars = params.copy()
+            bkg_pars = params.copy()
+            # or likelihood-ratio profile bootstrap:
+            # signal_pars = fixed_poi_fit(poi_test, self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
+            # bkg_pars = fixed_poi_fit(0.0, self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
+        else:
+            fixed = self.fixed_params
+            signal_pars = self.pdf.config.suggested_init()
+            bkg_pars = self.pdf.config.suggested_init()
+
         signal_pars[self.pdf.config.poi_index] = poi_test
         signal_pdf = self.pdf.make_pdf(tensorlib.astensor(signal_pars))
         signal_sample = signal_pdf.sample(sample_shape)
 
-        bkg_pars = self.pdf.config.suggested_init()
         bkg_pars[self.pdf.config.poi_index] = 0.0
         bkg_pdf = self.pdf.make_pdf(tensorlib.astensor(bkg_pars))
         bkg_sample = bkg_pdf.sample(sample_shape)
 
-        teststat_func = qmu_tilde if self.qtilde else qmu
+        teststat_func = qmu_tilde if self.qtilde else (tmu_tilde if self.ttilde else qmu)
 
         tqdm_options = dict(
             total=self.ntoys,
@@ -545,7 +571,7 @@ class ToyCalculator(object):
                     self.pdf,
                     signal_pars,
                     self.par_bounds,
-                    self.fixed_params,
+                    fixed,
                 )
             )
 
@@ -558,7 +584,7 @@ class ToyCalculator(object):
                     self.pdf,
                     bkg_pars,
                     self.par_bounds,
-                    self.fixed_params,
+                    fixed,
                 )
             )
 
@@ -595,7 +621,7 @@ class ToyCalculator(object):
             Float: The value of the test statistic.
 
         """
-        teststat_func = qmu_tilde if self.qtilde else qmu
+        teststat_func = qmu_tilde if self.qtilde else (tmu_tilde if self.ttilde else qmu)
         teststat = teststat_func(
             poi_test,
             self.data,
