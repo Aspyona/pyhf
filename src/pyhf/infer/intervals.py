@@ -9,7 +9,7 @@ def _interp(x, xp, fp):
     return tb.astensor(np.interp(x, xp, fp))
 
 
-def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=False, **kwargs):
+def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=False, results=None, **kwargs):
     """
     Calculate an upper limit interval ``(0, poi_up)`` for a single
     Parameter of Interest (POI) using a fixed scan through POI-space.
@@ -49,7 +49,7 @@ def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=
               Only returned when ``return_results`` is ``True``.
     """
     tb, _ = get_backend()
-    results = [
+    results = results if results else [
         hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True, **kwargs,) for mu in scan
     ]
     obs = tb.astensor([[r[0]] for r in results])
@@ -68,9 +68,12 @@ def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=
         limits = [_interp(level, result_arrary[idx].tolist()[::-1], scan.tolist()[::-1]) for idx in range(6)]
         obs_limit_CLsb, exp_limits_CLsb = limits[0], limits[1:]
 
+        obs_limit = (obs_limit, obs_limit_CLsb)
+        exp_limits = (exp_limits, exp_limits_CLsb)
+
         if return_results:
-            return obs_limit, exp_limits, obs_limit_CLsb, exp_limits_CLsb, (scan, results)
-        return obs_limit, exp_limits, obs_limit_CLsb, exp_limits_CLsb
+            return obs_limit, exp_limits, (scan, results)
+        return obs_limit, exp_limits
     else:
         if return_results:
             return obs_limit, exp_limits, (scan, results)
