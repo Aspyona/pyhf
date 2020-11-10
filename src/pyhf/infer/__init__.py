@@ -2,6 +2,7 @@
 
 from . import utils
 from .. import get_backend
+# from numpy import histogram
 
 
 def hypotest(
@@ -17,6 +18,7 @@ def hypotest(
     return_CLsb=False,
     return_expected=False,
     return_expected_set=False,
+    return_dist=False,
     **kwargs,
 ):
     r"""
@@ -55,6 +57,7 @@ def hypotest(
         return_tail_probs (:obj:`bool`): Bool for returning :math:`\mathrm{CL}_{s+b}` and :math:`\mathrm{CL}_{b}`
         return_expected (:obj:`bool`): Bool for returning :math:`\mathrm{CL}_{\mathrm{exp}}`
         return_expected_set (:obj:`bool`): Bool for returning the :math:`(-2,-1,0,1,2)\sigma` :math:`\mathrm{CL}_{\mathrm{exp}}` --- the "Brazil band"
+        return_dist (:obj:`bool`): Return the sampled distributions (only if calculator is toybased)
 
     Returns:
         Tuple of Floats and lists of Floats:
@@ -145,7 +148,19 @@ def hypotest(
     )
 
     teststat = calc.teststatistic(poi_test)
-    sig_plus_bkg_distribution, b_only_distribution = calc.distributions(poi_test)
+    dists = calc.distributions(poi_test)
+    if len(dists) == 5:
+        sig_plus_bkg_distribution, b_only_distribution, muhats, bkg_sample, lhood_vals = dists
+        return_fitted = True
+        return_sample = True
+    elif len(dists) == 3:
+        sig_plus_bkg_distribution, b_only_distribution, muhats = dists
+        return_fitted = True
+        return_sample = False
+    elif len(dists) == 2:
+        sig_plus_bkg_distribution, b_only_distribution = dists
+        return_fitted = False
+        return_sample = False
 
     CLsb = sig_plus_bkg_distribution.pvalue(teststat)
     CLb = b_only_distribution.pvalue(teststat)
@@ -194,8 +209,21 @@ def hypotest(
         _returns.append(tensorlib.astensor(CLs))
         if return_CLsb:
             _returns.append([CLsb])
-    # Enforce a consistent return type of the observed CLs
-    return tuple(_returns) if len(_returns) > 1 else _returns[0]
+    if calctype == 'toybased' and return_dist:
+        # sig_max = tensorlib.max(sig_plus_bkg_distribution.samples)
+        # bkg_max = tensorlib.max(b_only_distribution.samples)
+        # hist_range = (0, bkg_max) if bkg_max > sig_max else (0, sig_max)
+        # sig_hist = histogram(sig_plus_bkg_distribution.samples, bins=50, range=hist_range)
+        # bkg_hist = histogram(b_only_distribution.samples, bins=50, range=hist_range)
+        # _returns.append([sig_hist, bkg_hist])
+        _returns.append([sig_plus_bkg_distribution.samples, b_only_distribution.samples])
+    if return_fitted:
+        _returns.append(muhats)
+    if return_sample:
+        return tuple(_returns), bkg_sample, lhood_vals
+    else:
+        # Enforce a consistent return type of the obseved CLs
+        return tuple(_returns) if len(_returns) > 1 else _returns[0]
 
 
 from . import intervals

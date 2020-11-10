@@ -459,6 +459,8 @@ class ToyCalculator(object):
         track_progress=True,
         ttilde=False,
         bootstrap=False,
+        return_fitted_pars=False,
+        reuse_bkg_sample=None,
     ):
         """
         Toy-based Calculator.
@@ -493,6 +495,11 @@ class ToyCalculator(object):
         self.qtilde = qtilde
         self.ttilde = ttilde
         self.bootstrap = bootstrap
+        self.return_fitted_pars = return_fitted_pars
+        self.return_bkg_sample = True if reuse_bkg_sample is True else False
+        self.bkg_sample = reuse_bkg_sample[0] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
+        self.bkg_muhatbhats = reuse_bkg_sample[1] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
+        self.lhood_vals = reuse_bkg_sample[2] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
         self.track_progress = track_progress
 
     def distributions(self, poi_test, track_progress=None):
@@ -532,12 +539,12 @@ class ToyCalculator(object):
         if self.bootstrap:
             fixed = [True] * self.pdf.config.npars
             fixed[self.pdf.config.poi_index] = False
-            params = fit(self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
-            signal_pars = params.copy()
-            bkg_pars = params.copy()
+            # params = fit(self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
+            # signal_pars = params.copy()
+            # bkg_pars = params.copy()
             # or likelihood-ratio profile bootstrap:
-            # signal_pars = fixed_poi_fit(poi_test, self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
-            # bkg_pars = fixed_poi_fit(0.0, self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
+            signal_pars = fixed_poi_fit(poi_test, self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
+            bkg_pars = fixed_poi_fit(0.0, self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
         else:
             fixed = self.fixed_params
             signal_pars = self.pdf.config.suggested_init()
@@ -546,10 +553,12 @@ class ToyCalculator(object):
         signal_pars[self.pdf.config.poi_index] = poi_test
         signal_pdf = self.pdf.make_pdf(tensorlib.astensor(signal_pars))
         signal_sample = signal_pdf.sample(sample_shape)
+        # signal_sample = tensorlib.concatenate([signal_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
 
         bkg_pars[self.pdf.config.poi_index] = 0.0
         bkg_pdf = self.pdf.make_pdf(tensorlib.astensor(bkg_pars))
-        bkg_sample = bkg_pdf.sample(sample_shape)
+        bkg_sample = bkg_pdf.sample(sample_shape) if self.bkg_sample is None else self.bkg_sample
+        # bkg_sample = tensorlib.concatenate([bkg_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
 
         teststat_func = qmu_tilde if self.qtilde else (tmu_tilde if self.ttilde else qmu)
 
@@ -563,33 +572,63 @@ class ToyCalculator(object):
         )
 
         signal_teststat = []
+        signal_mubhathat = []
+        signal_muhatbhat = []
         for sample in tqdm.tqdm(signal_sample, **tqdm_options, desc='Signal-like'):
-            signal_teststat.append(
-                teststat_func(
-                    poi_test,
-                    sample,
-                    self.pdf,
-                    signal_pars,
-                    self.par_bounds,
-                    fixed,
-                )
+            teststat_out = teststat_func(
+                poi_test,
+                sample,
+                self.pdf,
+                signal_pars,
+                self.par_bounds,
+                fixed,
+                return_fitted_pars=self.return_fitted_pars,
+                bootstrap=self.bootstrap
             )
+            if self.return_fitted_pars:
+                teststat, (mubhathat, muhatbhat) = teststat_out
+                signal_mubhathat.append(mubhathat)
+                signal_muhatbhat.append(muhatbhat)
+                signal_teststat.append(teststat)
+            else:
+                signal_teststat.append(teststat_out)
 
         bkg_teststat = []
-        for sample in tqdm.tqdm(bkg_sample, **tqdm_options, desc='Background-like'):
-            bkg_teststat.append(
-                teststat_func(
-                    poi_test,
-                    sample,
-                    self.pdf,
-                    bkg_pars,
-                    self.par_bounds,
-                    fixed,
-                )
+        bkg_mubhathat = []
+        bkg_muhatbhat = []
+        lhood_vals = []
+        for s, sample in tqdm.tqdm(enumerate(bkg_sample), **tqdm_options, desc='Background-like'):
+            teststat_out = teststat_func(
+                poi_test,
+                sample,
+                self.pdf,
+                bkg_pars,
+                self.par_bounds,
+                fixed,
+                return_fitted_pars=self.return_fitted_pars or self.return_bkg_sample,
+                bkg_muhatbhat=None if self.bkg_muhatbhats is None else self.bkg_muhatbhats[s],
+                custom_unconstrained_fit_lhood_val=True if self.return_bkg_sample else (None if self.lhood_vals is None else self.lhood_vals[s]),
+                bootstrap=self.bootstrap
             )
+            if self.return_fitted_pars:
+                if self.return_bkg_sample:
+                    teststat, (mubhathat, muhatbhat), lhood_val = teststat_out
+                    lhood_vals.append(lhood_val)
+                else:
+                    teststat, (mubhathat, muhatbhat) = teststat_out
+                bkg_teststat.append(teststat)
+                bkg_mubhathat.append(mubhathat)
+                bkg_muhatbhat.append(muhatbhat)
+            else:
+                bkg_teststat.append(teststat_out)
 
         s_plus_b = EmpiricalDistribution(tensorlib.astensor(signal_teststat))
         b_only = EmpiricalDistribution(tensorlib.astensor(bkg_teststat))
+        if self.return_fitted_pars:
+            out = s_plus_b, b_only, [[tensorlib.astensor(signal_mubhathat), tensorlib.astensor(signal_muhatbhat)], [tensorlib.astensor(bkg_mubhathat), tensorlib.astensor(bkg_muhatbhat)]]
+            if self.return_bkg_sample:
+                out = (*out, bkg_sample, lhood_vals)
+            return out
         return s_plus_b, b_only
 
     def teststatistic(self, poi_test):

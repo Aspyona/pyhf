@@ -9,7 +9,7 @@ def _interp(x, xp, fp):
     return tb.astensor(np.interp(x, xp, fp))
 
 
-def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=False, results=None, **kwargs):
+def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=False, results=None, reuse_bkg_sample=False, **kwargs):
     """
     Calculate an upper limit interval ``(0, poi_up)`` for a single
     Parameter of Interest (POI) using a fixed scan through POI-space.
@@ -49,9 +49,24 @@ def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=
               Only returned when ``return_results`` is ``True``.
     """
     tb, _ = get_backend()
-    results = results if results else [
-        hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True, **kwargs,) for mu in scan
-    ]
+    if reuse_bkg_sample and results is None:
+        kwargs['return_dist'] = True
+        kwargs['return_fitted_pars'] = True
+        kwargs['reuse_bkg_sample'] = True
+        results = []
+        for i, mu in enumerate(scan):
+            if i == 0:
+                result, bkg_sample, lhood_vals = hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True, **kwargs,)
+                muhatbhats = result[5][1][1].copy()
+                kwargs['reuse_bkg_sample'] = (bkg_sample, muhatbhats, lhood_vals)
+            else:
+                result = hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True,  **kwargs,)
+                result[5][1][1] = None  # muhatbhats
+            results.append(result)
+    else:
+        results = results if results else [
+            hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True, **kwargs,) for mu in scan
+        ]
     obs = tb.astensor([[r[0]] for r in results])
     exp = tb.astensor([[r[2][idx] for idx in range(5)] for r in results])
     result_arrary = tb.concatenate([obs, exp], axis=1).T

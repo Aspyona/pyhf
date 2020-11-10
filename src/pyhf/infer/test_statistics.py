@@ -7,7 +7,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params):
+def _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=False, **kwargs):
     """
     Clipped version of _tmu_like where the returned test statistic
     is 0 if muhat > 0 else tmu_like_stat.
@@ -16,17 +16,19 @@ def _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params):
     qmu_tilde. Otherwise this is qmu (no tilde).
     """
     tensorlib, optimizer = get_backend()
-    tmu_like_stat, (_, muhatbhat) = _tmu_like(
-        mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=True
+    tmu_like_stat, (mubhathat, muhatbhat) = _tmu_like(
+        mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=True, **kwargs
     )
     qmu_like_stat = tensorlib.where(
         muhatbhat[pdf.config.poi_index] > mu, tensorlib.astensor(0.0), tmu_like_stat
     )
+    if return_fitted_pars:
+        return qmu_like_stat, (mubhathat, muhatbhat)
     return qmu_like_stat
 
 
 def _tmu_like(
-    mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=False
+    mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=False, bkg_muhatbhat=None, custom_unconstrained_fit_lhood_val=None, bootstrap=False
 ):
     """
     Basic Profile Likelihood test statistic.
@@ -35,22 +37,37 @@ def _tmu_like(
     tmu_tilde. Otherwise this is tmu (no tilde).
     """
     tensorlib, optimizer = get_backend()
-    mubhathat, fixed_poi_fit_lhood_val = fixed_poi_fit(
-        mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True
-    )
-    muhatbhat, unconstrained_fit_lhood_val = fit(
-        data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True
-    )
+
+    if bootstrap:
+        mubhathat = init_pars
+        mubhathat[pdf.config.poi_index] = mu
+        fixed_poi_fit_lhood_val = -2 * pdf.logpdf_jit(mubhathat, data)
+    else:
+        mubhathat, fixed_poi_fit_lhood_val = fixed_poi_fit(
+            mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True
+        )
+    if bkg_muhatbhat is None:
+        muhatbhat, unconstrained_fit_lhood_val = fit(
+            data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True
+        )
+    else:
+        # reuse bkg sample
+        muhatbhat = bkg_muhatbhat
+        unconstrained_fit_lhood_val = custom_unconstrained_fit_lhood_val
+
     log_likelihood_ratio = fixed_poi_fit_lhood_val - unconstrained_fit_lhood_val
     tmu_like_stat = tensorlib.astensor(
         tensorlib.clip(log_likelihood_ratio, 0.0, max_value=None)
     )
-    if return_fitted_pars:
-        return tmu_like_stat, (mubhathat, muhatbhat)
+    if return_fitted_pars or custom_unconstrained_fit_lhood_val:
+        if custom_unconstrained_fit_lhood_val is True:
+            return tmu_like_stat, (mubhathat, muhatbhat), unconstrained_fit_lhood_val
+        else:
+            return tmu_like_stat, (mubhathat, muhatbhat)
     return tmu_like_stat
 
 
-def qmu(mu, data, pdf, init_pars, par_bounds, fixed_params):
+def qmu(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs):
     r"""
     The test statistic, :math:`q_{\mu}`, for establishing an upper
     limit on the strength parameter, :math:`\mu`, as defiend in
@@ -108,10 +125,10 @@ def qmu(mu, data, pdf, init_pars, par_bounds, fixed_params):
             'qmu test statistic used for fit configuration with POI bounded at zero.\n'
             + 'Use the qmu_tilde test statistic (pyhf.infer.test_statistics.qmu_tilde) instead.'
         )
-    return _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params)
+    return _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs)
 
 
-def qmu_tilde(mu, data, pdf, init_pars, par_bounds, fixed_params):
+def qmu_tilde(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs):
     r"""
     The "alternative" test statistic, :math:`\tilde{q}_{\mu}`, for establishing
     an upper limit on the strength parameter, :math:`\mu`, for models with
@@ -174,10 +191,10 @@ def qmu_tilde(mu, data, pdf, init_pars, par_bounds, fixed_params):
             'qmu_tilde test statistic used for fit configuration with POI not bounded at zero.\n'
             + 'Use the qmu test statistic (pyhf.infer.test_statistics.qmu) instead.'
         )
-    return _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params)
+    return _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs)
 
 
-def tmu(mu, data, pdf, init_pars, par_bounds, fixed_params):
+def tmu(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs):
     r"""
     The test statistic, :math:`t_{\mu}`, for establishing a two-sided
     interval on the strength parameter, :math:`\mu`, as defiend in Equation (8)
@@ -229,10 +246,10 @@ def tmu(mu, data, pdf, init_pars, par_bounds, fixed_params):
             'tmu test statistic used for fit configuration with POI bounded at zero.\n'
             + 'Use the tmu_tilde test statistic (pyhf.infer.test_statistics.tmu_tilde) instead.'
         )
-    return _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params)
+    return _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs)
 
 
-def tmu_tilde(mu, data, pdf, init_pars, par_bounds, fixed_params):
+def tmu_tilde(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs):
     r"""
     The test statistic, :math:`\tilde{t}_{\mu}`, for establishing a two-sided
     interval on the strength parameter, :math:`\mu`, for models with
@@ -289,4 +306,4 @@ def tmu_tilde(mu, data, pdf, init_pars, par_bounds, fixed_params):
             'tmu_tilde test statistic used for fit configuration with POI not bounded at zero.\n'
             + 'Use the tmu test statistic (pyhf.infer.test_statistics.tmu) instead.'
         )
-    return _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params)
+    return _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs)
