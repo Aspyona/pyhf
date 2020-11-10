@@ -29,6 +29,9 @@ class pytorch_backend(object):
         """
         torch.set_default_dtype(self.dtypemap["float"])
 
+    def jit(self, f):
+        return(f)
+
     def clip(self, tensor_in, min_value, max_value):
         """
         Clips (limits) the tensor values to be within a specified min and max.

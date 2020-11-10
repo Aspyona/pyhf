@@ -602,6 +602,8 @@ class Model(object):
         self.fullpdf_tv = _tensorviewer_from_sizes(
             sizes, ['main', 'aux'], self.batch_size
         )
+        tensorlib, optimizer = get_backend()
+        self.logpdf_jit = tensorlib.jit(self.logpdf)
 
     def expected_auxdata(self, pars):
         """

@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from jax.scipy.special import gammaln
 from jax.scipy import special
 from jax.scipy.stats import norm
+from jax import jit
 import numpy as np
 import scipy.stats as osp_stats
 import logging
@@ -67,6 +68,9 @@ class jax_backend(object):
         """
         Run any global setups for the jax lib.
         """
+
+    def jit(self, f):
+        return(jit(f))
 
     def clip(self, tensor_in, min_value, max_value):
         """

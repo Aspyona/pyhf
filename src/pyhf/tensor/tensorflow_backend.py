@@ -26,6 +26,9 @@ class tensorflow_backend(object):
         Run any global setups for the tensorflow lib.
         """
 
+    def jit(self, f):
+        return(f)
+
     def clip(self, tensor_in, min_value, max_value):
         """
         Clips (limits) the tensor values to be within a specified min and max.
