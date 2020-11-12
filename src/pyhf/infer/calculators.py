@@ -8,9 +8,12 @@ hypotheses.
 Using the calculators hypothesis tests can then be performed.
 """
 from .mle import fixed_poi_fit, fit
-from .. import get_backend
-from .test_statistics import qmu, qmu_tilde, tmu_tilde
+from ..optimize.opt_minuit import minuit_optimizer
+from .. import get_backend, set_backend
+from .test_statistics import qmu, qmu_tilde, tmu_tilde, tmu
 import tqdm
+from scipy.optimize import minimize
+from numpy import argmin, linspace
 
 
 def generate_asimov_data(asimov_mu, data, pdf, init_pars, par_bounds, fixed_params):
@@ -265,7 +268,7 @@ class AsymptoticCalculator(object):
         )
         sqrtqmu_v = tensorlib.sqrt(qmu_v)
 
-        asimov_mu = 0.0
+        asimov_mu = 0.0  # ?!!
         asimov_data = generate_asimov_data(
             asimov_mu,
             self.data,
@@ -292,7 +295,7 @@ class AsymptoticCalculator(object):
                 teststat = sqrtqmu_v - self.sqrtqmuA_v
                 return teststat
 
-            def _false_case():
+            def _false_case():  # correct for bkg only case, bc mu_prime = 0, for sig+bkg case it turns into (qmu + qmu_A) / (2 * sqrtqmuA_v) where qmu_A is calculated with mu_prime = 0
                 qmu = tensorlib.power(sqrtqmu_v, 2)
                 qmu_A = tensorlib.power(self.sqrtqmuA_v, 2)
                 teststat = (qmu - qmu_A) / (2 * self.sqrtqmuA_v)
@@ -461,6 +464,7 @@ class ToyCalculator(object):
         bootstrap=False,
         return_fitted_pars=False,
         reuse_bkg_sample=None,
+        fix_auxdata=True,
     ):
         """
         Toy-based Calculator.
@@ -501,6 +505,7 @@ class ToyCalculator(object):
         self.bkg_muhatbhats = reuse_bkg_sample[1] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
         self.lhood_vals = reuse_bkg_sample[2] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
         self.track_progress = track_progress
+        self.fix_auxdata = fix_auxdata
 
     def distributions(self, poi_test, track_progress=None):
         """
@@ -553,12 +558,14 @@ class ToyCalculator(object):
         signal_pars[self.pdf.config.poi_index] = poi_test
         signal_pdf = self.pdf.make_pdf(tensorlib.astensor(signal_pars))
         signal_sample = signal_pdf.sample(sample_shape)
-        # signal_sample = tensorlib.concatenate([signal_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
+        if self.fix_auxdata:
+            signal_sample = tensorlib.concatenate([signal_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
 
         bkg_pars[self.pdf.config.poi_index] = 0.0
         bkg_pdf = self.pdf.make_pdf(tensorlib.astensor(bkg_pars))
         bkg_sample = bkg_pdf.sample(sample_shape) if self.bkg_sample is None else self.bkg_sample
-        # bkg_sample = tensorlib.concatenate([bkg_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
+        if self.fix_auxdata:
+            bkg_sample = tensorlib.concatenate([bkg_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
 
         teststat_func = qmu_tilde if self.qtilde else (tmu_tilde if self.ttilde else qmu)
 
@@ -670,3 +677,277 @@ class ToyCalculator(object):
             self.fixed_params,
         )
         return teststat
+
+
+class AsymptoticTestStatDistributionCDF(object):
+    r"""
+    The distribution the test statistic in the asymptotic case.
+    Using the CDF from the paper.
+    """
+
+    def __init__(self, data, model, mu, mu_prime, sigma=None, test_statistic='tmu', asimov_val=None, tilde=True, use_asimov=True):
+        self.data = data
+        self.model = model
+        self.mu = mu
+        self.mu_prime = mu_prime
+        self.sigma = sigma
+        self.asimov_val = asimov_val
+        self.use_asimov = use_asimov
+        self.tilde = tilde
+        self.test_statistic = test_statistic
+        if test_statistic == 'tmu':
+            self.teststat_cdf = tmu_cdf
+        elif test_statistic == 'qmu':
+            self.teststat_cdf = qmu_cdf
+
+    def cdf(self, value):
+        return(self.teststat_cdf(value,
+                                 self.mu,
+                                 self.mu_prime,
+                                 self.data,
+                                 self.model,
+                                 self.sigma,
+                                 asimov_val=self.asimov_val,
+                                 tilde=self.tilde,
+                                 use_asimov=self.use_asimov))
+
+    def ppf(self, quantile, method='Nelder-Mead', tol=1e-6, start_val=None):
+        if quantile == 0.0:
+            return(0.0)
+
+        if self.tilde and (self.test_statistic == 'qmu') and (self.mu == 0):
+            return(0.0)
+
+        tensorlib, _ = get_backend()
+
+        def function(value):
+            return self.cdf(value)
+
+        def diff(value, quantile):
+            y = function(value)
+            return (y - quantile)**2
+
+        if not start_val:
+            if function(1.0) > quantile:
+                test_values = linspace(0, 1, 1000)
+            elif function(10.0) > quantile:
+                test_values = linspace(1, 10, 1000)
+            elif function(50.0) > quantile:
+                test_values = linspace(10, 50, 10000)
+            else:
+                test_values = linspace(50, 200, 10000)
+            arg = argmin(tensorlib.abs(function(test_values) - quantile))
+            start_val = test_values[arg]
+
+        if tensorlib.abs(function(start_val) - quantile) < 0.002:
+            return(start_val)
+
+        res = minimize(diff, start_val, args=(quantile), method=method, tol=tol)
+        value = res.x[0]
+        return(value)
+
+    def pvalue(self, value):
+        return(1 - self.cdf(value))
+
+    def expected_value(self, nsigma):
+        tensorlib, _ = get_backend()
+        return self.ppf(tensorlib.normal_cdf(0 + nsigma))
+
+
+class AsymptoticCalculatorCDF(object):
+    """The Asymptotic Calculator using the CDF."""
+
+    def __init__(
+        self,
+        data,
+        pdf,
+        init_pars=None,
+        par_bounds=None,
+        fixed_params=None,
+        qtilde=None,  # dummy
+        use_asimov=True,
+        tilde=True,
+        test_statistic='tmu',
+    ):
+        """
+        Asymptotic Calculator for tmu tuilde and qmu tilde using the CDF.
+        """
+        self.data = data
+        self.pdf = pdf
+        self.init_pars = init_pars or pdf.config.suggested_init()
+        self.par_bounds = par_bounds or pdf.config.suggested_bounds()
+        self.fixed_params = fixed_params or pdf.config.suggested_fixed()
+        self.asimov_val = None
+        self.tilde = tilde
+        self.use_asimov = use_asimov
+        self.test_statistic = test_statistic
+        self.sigma_poi_null = None
+
+    def distributions(self, poi_test, b_dist=True, sb_dist=True):
+        if self.use_asimov and (self.tilde or b_dist):
+            self.calc_asimov(poi_test)
+            sigma_poi_test = None
+        else:
+            if sb_dist:
+                sigma_poi_test = calc_sigma_fit(self.data, self.pdf, poi_test)
+            if b_dist:
+                self.sigma_poi_null = self.sigma_poi_null if self.sigma_poi_null else calc_sigma_fit(self.data, self.pdf, 0)
+
+        if sb_dist:
+            sb_dist = AsymptoticTestStatDistributionCDF(data=self.data,
+                                                        model=self.pdf,
+                                                        mu=poi_test,
+                                                        mu_prime=poi_test,
+                                                        sigma=sigma_poi_test,
+                                                        test_statistic=self.test_statistic,
+                                                        asimov_val=self.asimov_val,
+                                                        tilde=self.tilde,
+                                                        use_asimov=self.use_asimov,
+                                                        )
+            if not b_dist:
+                return sb_dist
+        if b_dist:
+            b_dist = AsymptoticTestStatDistributionCDF(data=self.data,
+                                                       model=self.pdf,
+                                                       mu=poi_test,
+                                                       mu_prime=0,
+                                                       sigma=self.sigma_poi_null,
+                                                       test_statistic=self.test_statistic,
+                                                       asimov_val=self.asimov_val,
+                                                       tilde=self.tilde,
+                                                       use_asimov=self.use_asimov,
+                                                       )
+            if not sb_dist:
+                return b_dist
+
+        return sb_dist, b_dist
+
+    def teststatistic(self, poi_test):
+        tensorlib, _ = get_backend()
+        if self.test_statistic == 'tmu':
+            teststat_func = tmu_tilde if self.tilde else tmu
+        elif self.test_statistic == 'qmu':
+            teststat_func = qmu_tilde if self.tilde else qmu
+        qmu_v = teststat_func(
+            poi_test,
+            self.data,
+            self.pdf,
+            self.init_pars,
+            self.par_bounds,
+            self.fixed_params,
+        )
+        return qmu_v
+
+    def calc_asimov(self, poi_test):
+        if self.test_statistic == 'tmu':
+            teststat_func = tmu_tilde if self.tilde else tmu
+        elif self.test_statistic == 'qmu':
+            teststat_func = qmu_tilde if self.tilde else qmu
+
+        asimov_mu = 0.0
+        asimov_data = generate_asimov_data(
+            asimov_mu,
+            self.data,
+            self.pdf,
+            self.init_pars,
+            self.par_bounds,
+            self.fixed_params,
+        )
+        self.asimov_val = teststat_func(
+            poi_test,
+            asimov_data,
+            self.pdf,
+            self.init_pars,
+            self.par_bounds,
+            self.fixed_params,
+        )
+
+
+def tmu_cdf(tmu_val, mu, mu_prime, data, model, sigma=None, asimov_val=None, use_asimov=False, tilde=True):
+    tensorlib, _ = get_backend()
+    phi = tensorlib.normal_cdf
+    sqrt = tensorlib.sqrt
+    tmu_val = tensorlib.astensor(tmu_val)
+
+    above = 0
+    if use_asimov:
+        below_thr = tmu_val <= asimov_val if tilde else 1.0
+        if mu == mu_prime:
+            common = phi(sqrt(tmu_val))
+            below = (below_thr) * (phi(sqrt(tmu_val)) - 1)
+            if tilde:
+                above = (~below_thr) * (phi((tmu_val + asimov_val) / (2 * sqrt(asimov_val))) - 1)
+        else:
+            common = phi(sqrt(tmu_val) + sqrt(asimov_val))
+            below = (below_thr) * (phi(sqrt(tmu_val) - sqrt(asimov_val)) - 1)
+            if tilde:
+                above = (~below_thr) * (phi((tmu_val - asimov_val) / (2 * sqrt(asimov_val))) - 1)
+    else:
+        below_thr = tmu_val <= (mu**2 / sigma**2) if tilde else 1.0
+        sigma = sigma if sigma else calc_sigma_fit(data, model, mu_prime)
+        common = phi(sqrt(tmu_val) + (mu - mu_prime) / sigma)
+        below = (below_thr) * (phi(sqrt(tmu_val) - (mu - mu_prime) / sigma) - 1)
+        if tilde:
+            if mu == 0:
+                above = 0.0
+            else:
+                above = (~below_thr) * (phi((tmu_val - (mu**2 - 2 * mu * mu_prime) / sigma**2) / (2 * mu / sigma)) - 1)
+
+    total = common + below + above
+    return(total)
+
+
+def qmu_cdf(qmu_val, mu, mu_prime, data, model, sigma=None, asimov_val=None, use_asimov=False, tilde=True):
+    tensorlib, _ = get_backend()
+    sqrt = tensorlib.sqrt
+    phi = tensorlib.normal_cdf
+    qmu_val = tensorlib.astensor(qmu_val)
+
+    above = 0
+    if use_asimov:
+        below_thr = qmu_val <= asimov_val if tilde else 1.0
+        iszero = qmu_val == 0
+        if mu == mu_prime:
+            below = below_thr * (~iszero) * phi(sqrt(qmu_val))
+            if tilde:
+                above = (~below_thr) * phi((qmu_val + asimov_val) / (2 * sqrt(asimov_val)))
+        else:
+            below = below_thr * (~iszero) * phi(sqrt(qmu_val) - sqrt(asimov_val))
+            if tilde:
+                above = (~below_thr) * phi((qmu_val - asimov_val) / (2 * sqrt(asimov_val)))
+    else:
+        sigma = sigma if sigma else calc_sigma_fit(data, model, mu_prime)
+        below_thr = qmu_val <= (mu**2 / sigma**2) if tilde else 1.0
+        iszero = qmu_val == 0
+
+        below = below_thr * (~iszero) * phi(sqrt(qmu_val) - (mu - mu_prime) / sigma)
+        if tilde:
+            if mu == 0:
+                above = (~below_thr) * 1.0
+            else:
+                above = (~below_thr) * phi((qmu_val - (mu**2 - 2 * mu * mu_prime) / sigma**2) / (2 * mu / sigma))
+
+    total = below + above
+    return(total)
+
+
+def calc_sigma_fit(data, model, mu_prime):
+    backend = get_backend()
+
+    init_pars = model.config.suggested_init()
+    pars_pdf = model.config.suggested_init()
+    pars_pdf[model.config.poi_index] = mu_prime
+    unbounded_bounds = model.config.suggested_bounds()
+    unbounded_bounds[model.config.poi_index] = (-25, 25)
+    bounded_bounds = model.config.suggested_bounds()
+    bounded_bounds[model.config.poi_index] = (0, 25)
+    fixed_params = model.config.suggested_fixed()
+
+    bestfit_nuisance_asimov = fixed_poi_fit(mu_prime, data, model, init_pars, bounded_bounds, fixed_params)
+    asimov_data = model.expected_data(bestfit_nuisance_asimov)
+
+    set_backend("numpy", minuit_optimizer(verbose=False))
+    sigma = fit(asimov_data, model, pars_pdf, unbounded_bounds, fixed_params, return_uncertainties=True)[model.config.poi_index, 1]
+
+    set_backend(*backend)
+    return sigma

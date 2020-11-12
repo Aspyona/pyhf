@@ -1,6 +1,6 @@
 """Inference for Statistical Models."""
 
-from .calculators import AsymptoticCalculator, ToyCalculator
+from .calculators import AsymptoticCalculator, ToyCalculator, AsymptoticCalculatorCDF
 
 
 def create_calculator(calctype, *args, **kwargs):
@@ -36,6 +36,6 @@ def create_calculator(calctype, *args, **kwargs):
     Returns:
         calculator (:obj:`object`): A calculator.
     """
-    return {'asymptotics': AsymptoticCalculator, 'toybased': ToyCalculator,}[
+    return {'asymptotics': AsymptoticCalculator, 'asymptoticsCDF': AsymptoticCalculatorCDF, 'toybased': ToyCalculator, }[
         calctype
     ](*args, **kwargs)
