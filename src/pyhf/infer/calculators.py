@@ -194,7 +194,7 @@ class AsymptoticCalculator(object):
         self.qtilde = qtilde
         self.sqrtqmuA_v = None
 
-    def distributions(self, poi_test):
+    def distributions(self, poi_test, b_dist=True, sb_dist=True):
         """
         Probability distributions of the test statistic, as defined in
         :math:`\S` 3 of :xref:`arXiv:1007.1727` under the Wald approximation,
@@ -225,8 +225,14 @@ class AsymptoticCalculator(object):
         """
         if self.sqrtqmuA_v is None:
             raise RuntimeError('need to call .teststatistic(poi_test) first')
-        sb_dist = AsymptoticTestStatDistribution(-self.sqrtqmuA_v)
-        b_dist = AsymptoticTestStatDistribution(0.0)
+        if sb_dist:
+            sb_dist = AsymptoticTestStatDistribution(-self.sqrtqmuA_v)
+            if not b_dist:
+                return sb_dist
+        if b_dist:
+            b_dist = AsymptoticTestStatDistribution(0.0)
+            if not sb_dist:
+                return b_dist
         return sb_dist, b_dist
 
     def teststatistic(self, poi_test):
@@ -457,14 +463,16 @@ class ToyCalculator(object):
         init_pars=None,
         par_bounds=None,
         fixed_params=None,
-        qtilde=True,
+        qtilde=False,
         ntoys=2000,
         track_progress=True,
-        ttilde=False,
         bootstrap=False,
         return_fitted_pars=False,
-        reuse_bkg_sample=None,
+        reuse_bkg_sample=False,
         fix_auxdata=True,
+        return_dist=False,
+        test_statistic='tmu',
+        tilde=True,
     ):
         """
         Toy-based Calculator.
@@ -485,29 +493,52 @@ class ToyCalculator(object):
             ~pyhf.infer.calculators.ToyCalculator: The calculator for toy-based quantities.
 
         """
-        if qtilde and ttilde:  # use ttilde if both are set to true
-            qtilde = False
-            # log.warning(
-            #     'qtilde and ttilde flag set to true, continuing with ttilde'
-            # )
+
         self.ntoys = ntoys
         self.data = data
         self.pdf = pdf
         self.init_pars = init_pars or pdf.config.suggested_init()
         self.par_bounds = par_bounds or pdf.config.suggested_bounds()
         self.fixed_params = fixed_params or pdf.config.suggested_fixed()
-        self.qtilde = qtilde
-        self.ttilde = ttilde
+        self.test_statistic = test_statistic
+        self.tilde = tilde
+
+        if qtilde:
+            self.test_statistic = 'qmu'
+            self.tilde = True
+
+        if self.test_statistic == 'tmu':
+            self.teststat_func = tmu_tilde if tilde else tmu
+        elif self.test_statistic == 'qmu':
+            self.teststat_func = qmu_tilde if tilde else qmu
+
         self.bootstrap = bootstrap
-        self.return_fitted_pars = return_fitted_pars
-        self.return_bkg_sample = True if reuse_bkg_sample is True else False
-        self.bkg_sample = reuse_bkg_sample[0] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
-        self.bkg_muhatbhats = reuse_bkg_sample[1] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
-        self.lhood_vals = reuse_bkg_sample[2] if (reuse_bkg_sample is not None and reuse_bkg_sample is not True) else None
-        self.track_progress = track_progress
+        self.reuse_bkg_sample = reuse_bkg_sample
+        self.return_fitted_pars = return_fitted_pars or reuse_bkg_sample
+        self.return_dist = return_dist
         self.fix_auxdata = fix_auxdata
 
-    def distributions(self, poi_test, track_progress=None):
+        self.bkg_sample = None
+        self.lhood_vals = None
+        self.bkg_pars_reused = None
+        self.bkg_pars = []
+        self.bkg_pars_fixed_poi = []
+        self.bkg_teststat_dist = []
+        self.sig_bkg_pars = []
+        self.sig_bkg_pars_fixed_poi = []
+        self.sig_bkg_teststat_dist = []
+        self.poi_list = []
+
+        self.tqdm_options = dict(
+            total=ntoys,
+            leave=False,
+            disable=not (
+                track_progress if track_progress is not None else track_progress
+            ),
+            unit='toy',
+        )
+
+    def distributions(self, poi_test, b_dist=True, sb_dist=True, track_progress=None):
         """
         Probability Distributions of the test statistic value under the signal + background and background-only hypothesis.
 
@@ -563,26 +594,37 @@ class ToyCalculator(object):
 
         bkg_pars[self.pdf.config.poi_index] = 0.0
         bkg_pdf = self.pdf.make_pdf(tensorlib.astensor(bkg_pars))
-        bkg_sample = bkg_pdf.sample(sample_shape) if self.bkg_sample is None else self.bkg_sample
+        self.bkg_sample = self.bkg_sample if (self.bkg_sample is not None and self.reuse_bkg_sample) else bkg_pdf.sample(sample_shape)
         if self.fix_auxdata:
-            bkg_sample = tensorlib.concatenate([bkg_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
+            self.bkg_sample = tensorlib.concatenate([self.bkg_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
 
-        teststat_func = qmu_tilde if self.qtilde else (tmu_tilde if self.ttilde else qmu)
+        if self.return_fitted_pars or self.return_dist:
+            self.poi_list.append(poi_test)
 
-        tqdm_options = dict(
-            total=self.ntoys,
-            leave=False,
-            disable=not (
-                track_progress if track_progress is not None else self.track_progress
-            ),
-            unit='toy',
-        )
+        if sb_dist:
+            s_plus_b = self.sig_bkg_dist_calc(poi_test, signal_pars, fixed, signal_sample)
+            if not b_dist:
+                return s_plus_b
 
+        if b_dist:
+            b_only = self.bkg_dist_calc(poi_test, bkg_pars, fixed)
+            if not sb_dist:
+                return b_only
+
+        # if self.return_fitted_pars:
+        #     out = s_plus_b, b_only, [[tensorlib.astensor(signal_mubhathat), tensorlib.astensor(signal_muhatbhat)], [tensorlib.astensor(bkg_mubhathat), tensorlib.astensor(bkg_muhatbhat)]]
+        #     if self.return_bkg_sample:
+        #         out = (*out, bkg_sample, lhood_vals)
+        #     return out
+        return s_plus_b, b_only
+
+    def sig_bkg_dist_calc(self, poi_test, signal_pars, fixed, signal_sample):
+        tensorlib, _ = get_backend()
         signal_teststat = []
         signal_mubhathat = []
         signal_muhatbhat = []
-        for sample in tqdm.tqdm(signal_sample, **tqdm_options, desc='Signal-like'):
-            teststat_out = teststat_func(
+        for sample in tqdm.tqdm(signal_sample, **self.tqdm_options, desc='Signal-like'):
+            teststat_out = self.teststat_func(
                 poi_test,
                 sample,
                 self.pdf,
@@ -593,50 +635,86 @@ class ToyCalculator(object):
                 bootstrap=self.bootstrap
             )
             if self.return_fitted_pars:
-                teststat, (mubhathat, muhatbhat) = teststat_out
-                signal_mubhathat.append(mubhathat)
+                teststat, (mubhathat, muhatbhat), _ = teststat_out
+                if not self.bootstrap:
+                    signal_mubhathat.append(mubhathat)
                 signal_muhatbhat.append(muhatbhat)
                 signal_teststat.append(teststat)
             else:
                 signal_teststat.append(teststat_out)
+        if self.return_fitted_pars:
+            self.sig_bkg_pars.append(tensorlib.astensor(signal_muhatbhat))
+            if not self.bootstrap:
+                self.sig_bkg_pars_fixed_poi.append(tensorlib.astensor(signal_mubhathat))
+        if self.return_dist:
+            self.sig_bkg_teststat_dist.append(tensorlib.astensor(signal_teststat))
+        return EmpiricalDistribution(tensorlib.astensor(signal_teststat))
 
+    def bkg_dist_calc(self, poi_test, bkg_pars, fixed):
+        tensorlib, optimizer = get_backend()
         bkg_teststat = []
         bkg_mubhathat = []
         bkg_muhatbhat = []
         lhood_vals = []
-        for s, sample in tqdm.tqdm(enumerate(bkg_sample), **tqdm_options, desc='Background-like'):
-            teststat_out = teststat_func(
+
+        if self.lhood_vals is None:
+            zipper = zip(self.bkg_sample)
+        else:
+            zipper = zip(self.bkg_sample, self.bkg_pars_reused, self.lhood_vals)
+
+        return_fitted_pars = self.return_fitted_pars or self.reuse_bkg_sample
+        first_run = self.reuse_bkg_sample and self.lhood_vals is None
+        # if first_run:  # use jax for first run
+        #     set_backend("jax")
+        #     tlib, _ = get_backend()
+        #     print('changing')
+        #     zipper = zip(tlib.astensor(self.bkg_sample))
+
+        for sample in tqdm.tqdm(zipper, **self.tqdm_options, desc='Background-like'):
+            if self.lhood_vals is None:
+                muhatbhat = None
+                unconstrained_fit_lhood_val = None
+            else:
+                sample, muhatbhat, unconstrained_fit_lhood_val = sample
+
+            teststat_out = self.teststat_func(
                 poi_test,
                 sample,
                 self.pdf,
                 bkg_pars,
                 self.par_bounds,
                 fixed,
-                return_fitted_pars=self.return_fitted_pars or self.return_bkg_sample,
-                bkg_muhatbhat=None if self.bkg_muhatbhats is None else self.bkg_muhatbhats[s],
-                custom_unconstrained_fit_lhood_val=True if self.return_bkg_sample else (None if self.lhood_vals is None else self.lhood_vals[s]),
-                bootstrap=self.bootstrap
+                return_fitted_pars=return_fitted_pars,
+                muhatbhat=muhatbhat,
+                unconstrained_fit_lhood_val=unconstrained_fit_lhood_val,
+                bootstrap=self.bootstrap,
             )
-            if self.return_fitted_pars:
-                if self.return_bkg_sample:
-                    teststat, (mubhathat, muhatbhat), lhood_val = teststat_out
-                    lhood_vals.append(lhood_val)
-                else:
-                    teststat, (mubhathat, muhatbhat) = teststat_out
+
+            if return_fitted_pars:
+                teststat, (mubhathat, muhatbhat), lhood_val = teststat_out
                 bkg_teststat.append(teststat)
-                bkg_mubhathat.append(mubhathat)
-                bkg_muhatbhat.append(muhatbhat)
+                if first_run:
+                    lhood_vals.append(lhood_val)
+                    bkg_muhatbhat.append(muhatbhat)
+                if self.return_fitted_pars and not self.bootstrap:
+                    bkg_mubhathat.append(mubhathat)
+                if not self.reuse_bkg_sample:
+                    bkg_muhatbhat.append(muhatbhat)
             else:
                 bkg_teststat.append(teststat_out)
 
-        s_plus_b = EmpiricalDistribution(tensorlib.astensor(signal_teststat))
-        b_only = EmpiricalDistribution(tensorlib.astensor(bkg_teststat))
+        if first_run:
+            # set_backend(tensorlib, optimizer)
+            self.lhood_vals = tensorlib.astensor(lhood_vals)  # independent of poi_test if bkg_sample is reused
+            self.bkg_pars_reused = tensorlib.astensor(bkg_muhatbhat)  # independent of poi_test if bkg_sample is reused
         if self.return_fitted_pars:
-            out = s_plus_b, b_only, [[tensorlib.astensor(signal_mubhathat), tensorlib.astensor(signal_muhatbhat)], [tensorlib.astensor(bkg_mubhathat), tensorlib.astensor(bkg_muhatbhat)]]
-            if self.return_bkg_sample:
-                out = (*out, bkg_sample, lhood_vals)
-            return out
-        return s_plus_b, b_only
+            if not self.reuse_bkg_sample:
+                self.bkg_pars.append(tensorlib.astensor(bkg_muhatbhat))
+            if not self.bootstrap:
+                self.bkg_pars_fixed_poi.append(tensorlib.astensor(bkg_mubhathat))
+        if self.return_dist:
+            self.bkg_teststat_dist.append(tensorlib.astensor(bkg_teststat))
+        return EmpiricalDistribution(tensorlib.astensor(bkg_teststat))
 
     def teststatistic(self, poi_test):
         """
@@ -667,8 +745,7 @@ class ToyCalculator(object):
             Float: The value of the test statistic.
 
         """
-        teststat_func = qmu_tilde if self.qtilde else (tmu_tilde if self.ttilde else qmu)
-        teststat = teststat_func(
+        teststat = self.teststat_func(
             poi_test,
             self.data,
             self.pdf,
@@ -728,11 +805,11 @@ class AsymptoticTestStatDistributionCDF(object):
             return (y - quantile)**2
 
         if not start_val:
-            if function(1.0) > quantile:
+            if function(1.0) >= quantile:
                 test_values = linspace(0, 1, 1000)
-            elif function(10.0) > quantile:
+            elif function(10.0) >= quantile:
                 test_values = linspace(1, 10, 1000)
-            elif function(50.0) > quantile:
+            elif function(50.0) >= quantile:
                 test_values = linspace(10, 50, 10000)
             else:
                 test_values = linspace(50, 200, 10000)
@@ -764,7 +841,7 @@ class AsymptoticCalculatorCDF(object):
         init_pars=None,
         par_bounds=None,
         fixed_params=None,
-        qtilde=None,  # dummy
+        qtilde=False,
         use_asimov=True,
         tilde=True,
         test_statistic='tmu',
@@ -782,6 +859,15 @@ class AsymptoticCalculatorCDF(object):
         self.use_asimov = use_asimov
         self.test_statistic = test_statistic
         self.sigma_poi_null = None
+
+        if qtilde:
+            self.test_statistic = 'qmu'
+            self.tilde = True
+
+        if self.test_statistic == 'tmu':
+            self.teststat_func = tmu_tilde if self.tilde else tmu
+        elif self.test_statistic == 'qmu':
+            self.teststat_func = qmu_tilde if self.tilde else qmu
 
     def distributions(self, poi_test, b_dist=True, sb_dist=True):
         if self.use_asimov and (self.tilde or b_dist):
@@ -824,11 +910,7 @@ class AsymptoticCalculatorCDF(object):
 
     def teststatistic(self, poi_test):
         tensorlib, _ = get_backend()
-        if self.test_statistic == 'tmu':
-            teststat_func = tmu_tilde if self.tilde else tmu
-        elif self.test_statistic == 'qmu':
-            teststat_func = qmu_tilde if self.tilde else qmu
-        qmu_v = teststat_func(
+        qmu_v = self.teststat_func(
             poi_test,
             self.data,
             self.pdf,
@@ -839,10 +921,6 @@ class AsymptoticCalculatorCDF(object):
         return qmu_v
 
     def calc_asimov(self, poi_test):
-        if self.test_statistic == 'tmu':
-            teststat_func = tmu_tilde if self.tilde else tmu
-        elif self.test_statistic == 'qmu':
-            teststat_func = qmu_tilde if self.tilde else qmu
 
         asimov_mu = 0.0
         asimov_data = generate_asimov_data(
@@ -853,7 +931,7 @@ class AsymptoticCalculatorCDF(object):
             self.par_bounds,
             self.fixed_params,
         )
-        self.asimov_val = teststat_func(
+        self.asimov_val = self.teststat_func(
             poi_test,
             asimov_data,
             self.pdf,
@@ -876,12 +954,18 @@ def tmu_cdf(tmu_val, mu, mu_prime, data, model, sigma=None, asimov_val=None, use
             common = phi(sqrt(tmu_val))
             below = (below_thr) * (phi(sqrt(tmu_val)) - 1)
             if tilde:
-                above = (~below_thr) * (phi((tmu_val + asimov_val) / (2 * sqrt(asimov_val))) - 1)
+                if asimov_val == 0:
+                    above = 0.0
+                else:
+                    above = (~below_thr) * (phi((tmu_val + asimov_val) / (2 * sqrt(asimov_val))) - 1)
         else:
             common = phi(sqrt(tmu_val) + sqrt(asimov_val))
             below = (below_thr) * (phi(sqrt(tmu_val) - sqrt(asimov_val)) - 1)
             if tilde:
-                above = (~below_thr) * (phi((tmu_val - asimov_val) / (2 * sqrt(asimov_val))) - 1)
+                if asimov_val == 0:
+                    above = 0.0
+                else:
+                    above = (~below_thr) * (phi((tmu_val - asimov_val) / (2 * sqrt(asimov_val))) - 1)
     else:
         below_thr = tmu_val <= (mu**2 / sigma**2) if tilde else 1.0
         sigma = sigma if sigma else calc_sigma_fit(data, model, mu_prime)
@@ -910,11 +994,17 @@ def qmu_cdf(qmu_val, mu, mu_prime, data, model, sigma=None, asimov_val=None, use
         if mu == mu_prime:
             below = below_thr * (~iszero) * phi(sqrt(qmu_val))
             if tilde:
-                above = (~below_thr) * phi((qmu_val + asimov_val) / (2 * sqrt(asimov_val)))
+                if asimov_val == 0:
+                    above = (~below_thr) * 1.0
+                else:
+                    above = (~below_thr) * phi((qmu_val + asimov_val) / (2 * sqrt(asimov_val)))
         else:
             below = below_thr * (~iszero) * phi(sqrt(qmu_val) - sqrt(asimov_val))
             if tilde:
-                above = (~below_thr) * phi((qmu_val - asimov_val) / (2 * sqrt(asimov_val)))
+                if asimov_val == 0:
+                    above = (~below_thr) * 1.0
+                else:
+                    above = (~below_thr) * phi((qmu_val - asimov_val) / (2 * sqrt(asimov_val)))
     else:
         sigma = sigma if sigma else calc_sigma_fit(data, model, mu_prime)
         below_thr = qmu_val <= (mu**2 / sigma**2) if tilde else 1.0

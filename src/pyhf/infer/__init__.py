@@ -9,16 +9,14 @@ def hypotest(
     poi_test,
     data,
     pdf,
-    init_pars=None,
-    par_bounds=None,
-    fixed_params=None,
-    qtilde=True,
     calctype="asymptotics",
     return_tail_probs=False,
     return_CLsb=False,
     return_expected=False,
     return_expected_set=False,
-    return_dist=False,
+    sb_dist_calc=None,
+    b_dist_calc=None,
+    calc=None,
     **kwargs,
 ):
     r"""
@@ -57,7 +55,6 @@ def hypotest(
         return_tail_probs (:obj:`bool`): Bool for returning :math:`\mathrm{CL}_{s+b}` and :math:`\mathrm{CL}_{b}`
         return_expected (:obj:`bool`): Bool for returning :math:`\mathrm{CL}_{\mathrm{exp}}`
         return_expected_set (:obj:`bool`): Bool for returning the :math:`(-2,-1,0,1,2)\sigma` :math:`\mathrm{CL}_{\mathrm{exp}}` --- the "Brazil band"
-        return_dist (:obj:`bool`): Return the sampled distributions (only if calculator is toybased)
 
     Returns:
         Tuple of Floats and lists of Floats:
@@ -132,35 +129,22 @@ def hypotest(
             Only returned when ``return_expected_set`` is ``True``.
 
     """
-    init_pars = init_pars or pdf.config.suggested_init()
-    par_bounds = par_bounds or pdf.config.suggested_bounds()
-    fixed_params = fixed_params or pdf.config.suggested_fixed()
 
-    calc = utils.create_calculator(
-        calctype,
-        data,
-        pdf,
-        init_pars,
-        par_bounds,
-        fixed_params,
-        qtilde=qtilde,
-        **kwargs,
-    )
-
-    teststat = calc.teststatistic(poi_test)
-    dists = calc.distributions(poi_test)
-    if len(dists) == 5:
-        sig_plus_bkg_distribution, b_only_distribution, muhats, bkg_sample, lhood_vals = dists
-        return_fitted = True
-        return_sample = True
-    elif len(dists) == 3:
-        sig_plus_bkg_distribution, b_only_distribution, muhats = dists
-        return_fitted = True
-        return_sample = False
-    elif len(dists) == 2:
-        sig_plus_bkg_distribution, b_only_distribution = dists
-        return_fitted = False
-        return_sample = False
+    if not sb_dist_calc and not b_dist_calc:
+        calc = calc or utils.create_calculator(
+            calctype,
+            data,
+            pdf,
+            **kwargs,
+        )
+        teststat = calc.teststatistic(poi_test)
+        sig_plus_bkg_distribution, b_only_distribution = calc.distributions(poi_test)
+    else:
+        assert(b_dist_calc.tilde == sb_dist_calc.tilde)
+        assert(b_dist_calc.test_statistic == sb_dist_calc.test_statistic)
+        teststat = sb_dist_calc.teststatistic(poi_test)  # ???
+        sig_plus_bkg_distribution = sb_dist_calc.distributions(poi_test, b_dist=False, sb_dist=True)
+        b_only_distribution = b_dist_calc.distributions(poi_test, b_dist=True, sb_dist=False)
 
     CLsb = sig_plus_bkg_distribution.pvalue(teststat)
     CLb = b_only_distribution.pvalue(teststat)
@@ -209,21 +193,9 @@ def hypotest(
         _returns.append(tensorlib.astensor(CLs))
         if return_CLsb:
             _returns.append([CLsb])
-    if calctype == 'toybased' and return_dist:
-        # sig_max = tensorlib.max(sig_plus_bkg_distribution.samples)
-        # bkg_max = tensorlib.max(b_only_distribution.samples)
-        # hist_range = (0, bkg_max) if bkg_max > sig_max else (0, sig_max)
-        # sig_hist = histogram(sig_plus_bkg_distribution.samples, bins=50, range=hist_range)
-        # bkg_hist = histogram(b_only_distribution.samples, bins=50, range=hist_range)
-        # _returns.append([sig_hist, bkg_hist])
-        _returns.append([sig_plus_bkg_distribution.samples, b_only_distribution.samples])
-    if return_fitted:
-        _returns.append(muhats)
-    if return_sample:
-        return tuple(_returns), bkg_sample, lhood_vals
-    else:
-        # Enforce a consistent return type of the obseved CLs
-        return tuple(_returns) if len(_returns) > 1 else _returns[0]
+
+    # Enforce a consistent return type of the obseved CLs
+    return tuple(_returns) if len(_returns) > 1 else _returns[0]
 
 
 from . import intervals

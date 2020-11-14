@@ -1,5 +1,6 @@
 """Interval estimation"""
 from . import hypotest
+from . import utils
 from .. import get_backend
 import numpy as np
 
@@ -9,7 +10,7 @@ def _interp(x, xp, fp):
     return tb.astensor(np.interp(x, xp, fp))
 
 
-def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=False, results=None, reuse_bkg_sample=False, **kwargs):
+def upperlimit(data, model, scan, level=0.05, return_results=False, return_calculators=False, return_CLsb=False, results=None, sb_calc_kw=None, b_calc_kw=None, calctype='asymptotics', **kwargs):
     """
     Calculate an upper limit interval ``(0, poi_up)`` for a single
     Parameter of Interest (POI) using a fixed scan through POI-space.
@@ -49,24 +50,63 @@ def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=
               Only returned when ``return_results`` is ``True``.
     """
     tb, _ = get_backend()
-    if reuse_bkg_sample and results is None:
-        kwargs['return_dist'] = True
-        kwargs['return_fitted_pars'] = True
-        kwargs['reuse_bkg_sample'] = True
+
+    if not results:
+        if sb_calc_kw or b_calc_kw:
+            assert(b_calc_kw)
+            assert(sb_calc_kw)
+
+            sb_calc_kw['par_bounds'] = sb_calc_kw.get('par_bounds') or kwargs.get('par_bounds')
+            b_calc_kw['par_bounds'] = b_calc_kw.get('par_bounds') or kwargs.get('par_bounds')
+
+            sb_calc = utils.create_calculator(
+                data=data,
+                pdf=model,
+                **sb_calc_kw,
+            )
+            b_calc = utils.create_calculator(
+                data=data,
+                pdf=model,
+                **b_calc_kw,
+            )
+            calc = None
+        else:
+            calc = utils.create_calculator(
+                calctype,
+                data,
+                model,
+                **kwargs,
+            )
+            sb_calc = None
+            b_calc = None
+
         results = []
-        for i, mu in enumerate(scan):
-            if i == 0:
-                result, bkg_sample, lhood_vals = hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True, **kwargs,)
-                muhatbhats = result[5][1][1].copy()
-                kwargs['reuse_bkg_sample'] = (bkg_sample, muhatbhats, lhood_vals)
-            else:
-                result = hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True,  **kwargs,)
-                result[5][1][1] = None  # muhatbhats
-            results.append(result)
+
+        for mu in scan:
+            results.append(
+                hypotest(mu, data, model, return_expected_set=True, return_CLsb=True, sb_dist_calc=sb_calc, b_dist_calc=b_calc, calc=calc,)
+            )
+        calculators = None
+        if calc:
+            if calctype == 'toybased':
+                if calc.return_fitted_pars or calc.return_dist:
+                    calculators = calc_to_dict(calc)
+        else:
+            sb_calc_return = None
+            b_calc_return = None
+            if sb_calc_kw['calctype'] == 'toybased':
+                if sb_calc.return_fitted_pars or sb_calc.return_dist:
+                    sb_calc_return = calc_to_dict(sb_calc)
+            if b_calc_kw['calctype'] == 'toybased':
+                if b_calc.return_fitted_pars or b_calc.return_dist:
+                    b_calc_return = calc_to_dict(b_calc)
+            calculators = [sb_calc_return, b_calc_return]
     else:
-        results = results if results else [
-            hypotest(mu, data, model, qtilde=True, return_expected_set=True, return_CLsb=True, **kwargs,) for mu in scan
-        ]
+        if type(results) == tuple:
+            (results, calculators) = results
+        else:
+            calculators = None
+
     obs = tb.astensor([[r[0]] for r in results])
     exp = tb.astensor([[r[2][idx] for idx in range(5)] for r in results])
     result_arrary = tb.concatenate([obs, exp], axis=1).T
@@ -86,10 +126,38 @@ def upperlimit(data, model, scan, level=0.05, return_results=False, return_CLsb=
         obs_limit = (obs_limit, obs_limit_CLsb)
         exp_limits = (exp_limits, exp_limits_CLsb)
 
-        if return_results:
+        if return_results or return_calculators:
+            if return_calculators:
+                results = (results, calculators)
             return obs_limit, exp_limits, (scan, results)
         return obs_limit, exp_limits
     else:
-        if return_results:
+        if return_results or return_calculators:
+            if return_calculators:
+                results = (results, calculators)
             return obs_limit, exp_limits, (scan, results)
         return obs_limit, exp_limits
+
+
+def calc_to_dict(calc):
+    calculator_dict = {}
+    calculator_dict['bkg_pars_reused'] = calc.bkg_pars_reused
+    calculator_dict['bkg_pars'] = calc.bkg_pars
+    calculator_dict['bkg_pars_fixed_poi'] = calc.bkg_pars_fixed_poi
+    calculator_dict['bkg_teststat_dist'] = calc.bkg_teststat_dist
+    calculator_dict['sig_bkg_pars'] = calc.sig_bkg_pars
+    calculator_dict['sig_bkg_pars_fixed_poi'] = calc.sig_bkg_pars_fixed_poi
+    calculator_dict['sig_bkg_teststat_dist'] = calc.sig_bkg_teststat_dist
+    calculator_dict['poi_list'] = calc.poi_list
+    calculator_dict['ntoys'] = calc.ntoys
+    calculator_dict['init_pars'] = calc.init_pars
+    calculator_dict['par_bounds'] = calc.par_bounds
+    calculator_dict['fixed_params'] = calc.fixed_params
+    calculator_dict['test_statistic'] = calc.test_statistic
+    calculator_dict['tilde'] = calc.tilde
+    calculator_dict['bootstra'] = calc.bootstrap
+    calculator_dict['reuse_bkg_sample'] = calc.reuse_bkg_sample
+    calculator_dict['return_fitted_pars'] = calc.return_fitted_pars
+    calculator_dict['return_dist'] = calc.return_dist
+    calculator_dict['fix_auxdata'] = calc.fix_auxdata
+    return calculator_dict

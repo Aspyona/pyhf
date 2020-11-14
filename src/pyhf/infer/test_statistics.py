@@ -16,20 +16,18 @@ def _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_
     qmu_tilde. Otherwise this is qmu (no tilde).
     """
     tensorlib, optimizer = get_backend()
-    tmu_like_stat, (mubhathat, muhatbhat) = _tmu_like(
+    tmu_like_stat, (mubhathat, muhatbhat), unconstrained_fit_lhood_val = _tmu_like(
         mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=True, **kwargs
     )
     qmu_like_stat = tensorlib.where(
         muhatbhat[pdf.config.poi_index] > mu, tensorlib.astensor(0.0), tmu_like_stat
     )
     if return_fitted_pars:
-        return qmu_like_stat, (mubhathat, muhatbhat)
+        return qmu_like_stat, (mubhathat, muhatbhat), unconstrained_fit_lhood_val
     return qmu_like_stat
 
 
-def _tmu_like(
-    mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=False, bkg_muhatbhat=None, custom_unconstrained_fit_lhood_val=None, bootstrap=False
-):
+def _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=False, muhatbhat=None, unconstrained_fit_lhood_val=None, bootstrap=False):
     """
     Basic Profile Likelihood test statistic.
 
@@ -46,24 +44,17 @@ def _tmu_like(
         mubhathat, fixed_poi_fit_lhood_val = fixed_poi_fit(
             mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True
         )
-    if bkg_muhatbhat is None:
+    if muhatbhat is None:
         muhatbhat, unconstrained_fit_lhood_val = fit(
             data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True
         )
-    else:
-        # reuse bkg sample
-        muhatbhat = bkg_muhatbhat
-        unconstrained_fit_lhood_val = custom_unconstrained_fit_lhood_val
 
     log_likelihood_ratio = fixed_poi_fit_lhood_val - unconstrained_fit_lhood_val
     tmu_like_stat = tensorlib.astensor(
         tensorlib.clip(log_likelihood_ratio, 0.0, max_value=None)
     )
-    if return_fitted_pars or custom_unconstrained_fit_lhood_val:
-        if custom_unconstrained_fit_lhood_val is True:
-            return tmu_like_stat, (mubhathat, muhatbhat), unconstrained_fit_lhood_val
-        else:
-            return tmu_like_stat, (mubhathat, muhatbhat)
+    if return_fitted_pars:
+        return tmu_like_stat, (mubhathat, muhatbhat), unconstrained_fit_lhood_val
     return tmu_like_stat
 
 
