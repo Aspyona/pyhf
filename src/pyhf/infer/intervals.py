@@ -53,21 +53,23 @@ def upperlimit(data, model, scan, level=0.05, return_results=False, return_calcu
 
     if not results:
         if sb_calc_kw or b_calc_kw:
-            assert(b_calc_kw)
-            assert(sb_calc_kw)
+            assert(b_calc_kw is not None)
+            assert(sb_calc_kw is not None)
 
-            sb_calc_kw['par_bounds'] = sb_calc_kw.get('par_bounds') or kwargs.get('par_bounds')
-            b_calc_kw['par_bounds'] = b_calc_kw.get('par_bounds') or kwargs.get('par_bounds')
+            sb_kw = sb_calc_kw.copy()
+            b_kw = b_calc_kw.copy()
+            sb_kw['par_bounds'] = sb_kw.get('par_bounds') or kwargs.get('par_bounds')
+            b_kw['par_bounds'] = b_kw.get('par_bounds') or kwargs.get('par_bounds')
 
             sb_calc = utils.create_calculator(
                 data=data,
                 pdf=model,
-                **sb_calc_kw,
+                **sb_kw,
             )
             b_calc = utils.create_calculator(
                 data=data,
                 pdf=model,
-                **b_calc_kw,
+                **b_kw,
             )
             calc = None
         else:

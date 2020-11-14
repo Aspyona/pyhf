@@ -27,7 +27,7 @@ def _qmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_
     return qmu_like_stat
 
 
-def _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=False, muhatbhat=None, unconstrained_fit_lhood_val=None, bootstrap=False):
+def _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_pars=False, muhatbhat=None, unconstrained_fit_lhood_val=None, bootstrap=False, ttilde=False):
     """
     Basic Profile Likelihood test statistic.
 
@@ -48,6 +48,13 @@ def _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_
         muhatbhat, unconstrained_fit_lhood_val = fit(
             data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True
         )
+        if ttilde and muhatbhat[pdf.config.poi_index] < 0:
+            if bootstrap:
+                muhatbhat_zero_poi = init_pars
+                muhatbhat_zero_poi[pdf.config.poi_index] = 0
+                unconstrained_fit_lhood_val = -2 * pdf.logpdf_jit(muhatbhat_zero_poi, data)
+            else:
+                _, unconstrained_fit_lhood_val = fixed_poi_fit(0, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True)
 
     log_likelihood_ratio = fixed_poi_fit_lhood_val - unconstrained_fit_lhood_val
     tmu_like_stat = tensorlib.astensor(
@@ -293,8 +300,8 @@ def tmu_tilde(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs):
             'No POI is defined. A POI is required for profile likelihood based test statistics.'
         )
     if par_bounds[pdf.config.poi_index][0] != 0:
-        log.warning(
+        log.info(
             'tmu_tilde test statistic used for fit configuration with POI not bounded at zero.\n'
             + 'Use the tmu test statistic (pyhf.infer.test_statistics.tmu) instead.'
         )
-    return _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, **kwargs)
+    return _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, ttilde=True, **kwargs)

@@ -14,6 +14,7 @@ from .test_statistics import qmu, qmu_tilde, tmu_tilde, tmu
 import tqdm
 from scipy.optimize import minimize
 from numpy import argmin, linspace
+import numpy as np
 
 
 def generate_asimov_data(asimov_mu, data, pdf, init_pars, par_bounds, fixed_params):
@@ -322,7 +323,7 @@ class EmpiricalDistribution(object):
     :math:`p`-values etc are computed from the sampled distribution.
     """
 
-    def __init__(self, samples):
+    def __init__(self, samples, expected=None):
         """
         Empirical distribution.
 
@@ -335,6 +336,7 @@ class EmpiricalDistribution(object):
         """
         tensorlib, _ = get_backend()
         self.samples = tensorlib.ravel(samples)
+        self.expected = expected
 
     def pvalue(self, value):
         """
@@ -440,6 +442,12 @@ class EmpiricalDistribution(object):
         Returns:
             Float: The expected value of the test statistic.
         """
+
+        if self.expected is not None:
+            # works for nsigma = [-2, -1, 0, 1, 2]
+            # no interpolation
+            return(self.expected[nsigma + 2])
+
         tensorlib, _ = get_backend()
         import numpy as np
 
@@ -611,11 +619,6 @@ class ToyCalculator(object):
             if not sb_dist:
                 return b_only
 
-        # if self.return_fitted_pars:
-        #     out = s_plus_b, b_only, [[tensorlib.astensor(signal_mubhathat), tensorlib.astensor(signal_muhatbhat)], [tensorlib.astensor(bkg_mubhathat), tensorlib.astensor(bkg_muhatbhat)]]
-        #     if self.return_bkg_sample:
-        #         out = (*out, bkg_sample, lhood_vals)
-        #     return out
         return s_plus_b, b_only
 
     def sig_bkg_dist_calc(self, poi_test, signal_pars, fixed, signal_sample):
@@ -641,6 +644,7 @@ class ToyCalculator(object):
                 signal_muhatbhat.append(muhatbhat)
                 signal_teststat.append(teststat)
             else:
+                signal_muhatbhat.append(muhatbhat)
                 signal_teststat.append(teststat_out)
         if self.return_fitted_pars:
             self.sig_bkg_pars.append(tensorlib.astensor(signal_muhatbhat))
@@ -648,7 +652,14 @@ class ToyCalculator(object):
                 self.sig_bkg_pars_fixed_poi.append(tensorlib.astensor(signal_mubhathat))
         if self.return_dist:
             self.sig_bkg_teststat_dist.append(tensorlib.astensor(signal_teststat))
-        return EmpiricalDistribution(tensorlib.astensor(signal_teststat))
+
+        # calculate expected
+        expected = None
+        if self.test_statistic == 'tmu':
+            muhats = tensorlib.astensor(signal_muhatbhat)[:, self.pdf.config.poi_index]
+            arg_percentiles = [self.arg_percentile(muhats, tensorlib.normal_cdf(nsigma) * 100) for nsigma in np.arange(-2, 3)]
+            expected = [tensorlib.astensor(signal_teststat).flatten()[idx] for idx in arg_percentiles]
+        return EmpiricalDistribution(tensorlib.astensor(signal_teststat), expected)
 
     def bkg_dist_calc(self, poi_test, bkg_pars, fixed):
         tensorlib, optimizer = get_backend()
@@ -664,11 +675,6 @@ class ToyCalculator(object):
 
         return_fitted_pars = self.return_fitted_pars or self.reuse_bkg_sample
         first_run = self.reuse_bkg_sample and self.lhood_vals is None
-        # if first_run:  # use jax for first run
-        #     set_backend("jax")
-        #     tlib, _ = get_backend()
-        #     print('changing')
-        #     zipper = zip(tlib.astensor(self.bkg_sample))
 
         for sample in tqdm.tqdm(zipper, **self.tqdm_options, desc='Background-like'):
             if self.lhood_vals is None:
@@ -701,10 +707,10 @@ class ToyCalculator(object):
                 if not self.reuse_bkg_sample:
                     bkg_muhatbhat.append(muhatbhat)
             else:
+                bkg_muhatbhat.append(muhatbhat)
                 bkg_teststat.append(teststat_out)
 
         if first_run:
-            # set_backend(tensorlib, optimizer)
             self.lhood_vals = tensorlib.astensor(lhood_vals)  # independent of poi_test if bkg_sample is reused
             self.bkg_pars_reused = tensorlib.astensor(bkg_muhatbhat)  # independent of poi_test if bkg_sample is reused
         if self.return_fitted_pars:
@@ -714,7 +720,22 @@ class ToyCalculator(object):
                 self.bkg_pars_fixed_poi.append(tensorlib.astensor(bkg_mubhathat))
         if self.return_dist:
             self.bkg_teststat_dist.append(tensorlib.astensor(bkg_teststat))
-        return EmpiricalDistribution(tensorlib.astensor(bkg_teststat))
+
+        # calculate expected
+        expected = None
+        if self.test_statistic == 'tmu':
+            if self.reuse_bkg_sample:
+                muhats = self.bkg_pars_reused[:, self.pdf.config.poi_index]
+            else:
+                muhats = tensorlib.astensor(bkg_muhatbhat)[:, self.pdf.config.poi_index]
+            arg_percentiles = [self.arg_percentile(muhats, tensorlib.normal_cdf(nsigma) * 100) for nsigma in np.arange(-2, 3)]
+            expected = [tensorlib.astensor(bkg_teststat).flatten()[idx] for idx in arg_percentiles]
+        return EmpiricalDistribution(tensorlib.astensor(bkg_teststat), expected)
+
+    def arg_percentile(self, a, q):
+        idx = q / 100 * (len(a) - 1)
+        idx = int(idx + 0.5)
+        return np.argpartition(a, idx)[idx]
 
     def teststatistic(self, poi_test):
         """
