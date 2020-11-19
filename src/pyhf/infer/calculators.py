@@ -444,9 +444,13 @@ class EmpiricalDistribution(object):
         """
 
         if self.expected is not None:
-            # works for nsigma = [-2, -1, 0, 1, 2]
+            # for tmu 'nsigma' are switched on purpose
+            # -2 <-> 2
+            # -1 <-> 1
+            # bc for qmu nsigma of cdf is switched wrt nsigma of mu_hat
+            # works only for nsigma in [-2, -1, 0, 1, 2]
             # no interpolation
-            return(self.expected[nsigma + 2])
+            return(self.expected[2 - nsigma])
 
         tensorlib, _ = get_backend()
         import numpy as np
@@ -591,8 +595,8 @@ class ToyCalculator(object):
             bkg_pars = fixed_poi_fit(0.0, self.data, self.pdf, self.init_pars, self.par_bounds, self.fixed_params).tolist()
         else:
             fixed = self.fixed_params
-            signal_pars = self.pdf.config.suggested_init()
-            bkg_pars = self.pdf.config.suggested_init()
+            signal_pars = self.init_pars
+            bkg_pars = self.init_pars
 
         signal_pars[self.pdf.config.poi_index] = poi_test
         signal_pdf = self.pdf.make_pdf(tensorlib.astensor(signal_pars))

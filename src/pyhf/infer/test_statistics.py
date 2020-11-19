@@ -51,7 +51,7 @@ def _tmu_like(mu, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_
         if ttilde and muhatbhat[pdf.config.poi_index] < 0:
             if bootstrap:
                 muhatbhat_zero_poi = init_pars
-                muhatbhat_zero_poi[pdf.config.poi_index] = 0
+                muhatbhat_zero_poi[pdf.config.poi_index] = 0.0
                 unconstrained_fit_lhood_val = -2 * pdf.logpdf_jit(muhatbhat_zero_poi, data)
             else:
                 _, unconstrained_fit_lhood_val = fixed_poi_fit(0, data, pdf, init_pars, par_bounds, fixed_params, return_fitted_val=True)
