@@ -3,11 +3,38 @@ from . import hypotest
 from . import utils
 from .. import get_backend
 import numpy as np
+from scipy.interpolate import interp1d
 
 
 def _interp(x, xp, fp):
     tb, _ = get_backend()
-    return tb.astensor(np.interp(x, xp, fp))
+
+    if np.isnan(fp).all():
+        print('all nan in scan')
+        return None
+
+    points = np.asarray([fp, np.nan_to_num(xp)]).T
+
+    # Linear length along the line:
+    distance = np.cumsum(np.sqrt(np.sum(np.diff(points, axis=0)**2, axis=1)))
+    distance = np.insert(distance, 0, 0) / distance[-1]
+
+    method = 'quadratic'  # 'cubic' 'slinear' 'quadratic'
+    alpha = np.linspace(0, 1, 10000)
+    interpolator = interp1d(distance, points, kind=method, axis=0)
+    fp_dense, xp_dense = interpolator(alpha).T
+
+    greater_than_x = xp_dense > x
+    if greater_than_x.all():
+        return None
+    if (~greater_than_x).all():
+        return 0.0
+
+    lower_bound = fp_dense[np.where(greater_than_x)[0][-1]]
+    upper_bound = fp_dense[np.where(greater_than_x)[0][0]]
+
+    # return tb.astensor(np.interp(x, xp, fp))
+    return upper_bound
 
 
 def upperlimit(data, model, scan, level=0.05, return_results=False, return_calculators=False, return_CLsb=False, results=None, sb_calc_kw=None, b_calc_kw=None, calctype='asymptotics', **kwargs):
