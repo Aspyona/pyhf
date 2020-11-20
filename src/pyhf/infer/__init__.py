@@ -142,7 +142,7 @@ def hypotest(
     else:
         assert(b_dist_calc.tilde == sb_dist_calc.tilde)
         assert(b_dist_calc.test_statistic == sb_dist_calc.test_statistic)
-        teststat = sb_dist_calc.teststatistic(poi_test)  # ???
+        teststat = sb_dist_calc.teststatistic(poi_test)  # does not matter, is same as b_dist
         sig_plus_bkg_distribution = sb_dist_calc.distributions(poi_test, b_dist=False, sb_dist=True)
         b_only_distribution = b_dist_calc.distributions(poi_test, b_dist=True, sb_dist=False)
 

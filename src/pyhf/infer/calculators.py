@@ -303,13 +303,15 @@ class AsymptoticCalculator(object):
                 return teststat
 
             def _false_case():  # correct for bkg only case, bc mu_prime = 0, for sig+bkg case it turns into (qmu + qmu_A) / (2 * sqrtqmuA_v) where qmu_A is calculated with mu_prime = 0
+                if self.sqrtqmuA_v == 0:
+                    return tensorlib.astensor(np.nan)
                 qmu = tensorlib.power(sqrtqmu_v, 2)
                 qmu_A = tensorlib.power(self.sqrtqmuA_v, 2)
                 teststat = (qmu - qmu_A) / (2 * self.sqrtqmuA_v)
                 return teststat
 
             teststat = tensorlib.conditional(
-                (sqrtqmu_v < self.sqrtqmuA_v), _true_case, _false_case
+                (sqrtqmu_v <= self.sqrtqmuA_v), _true_case, _false_case  # changed from < to <=
             )
         return teststat
 
@@ -323,7 +325,7 @@ class EmpiricalDistribution(object):
     :math:`p`-values etc are computed from the sampled distribution.
     """
 
-    def __init__(self, samples, expected=None):
+    def __init__(self, samples):
         """
         Empirical distribution.
 
@@ -336,7 +338,6 @@ class EmpiricalDistribution(object):
         """
         tensorlib, _ = get_backend()
         self.samples = tensorlib.ravel(samples)
-        self.expected = expected
 
     def pvalue(self, value):
         """
@@ -386,7 +387,7 @@ class EmpiricalDistribution(object):
         """
         tensorlib, _ = get_backend()
         return (
-            tensorlib.sum(tensorlib.where(self.samples >= value, 1, 0))
+            tensorlib.sum(tensorlib.where(tensorlib.abs(self.samples) >= value, 1, 0))
             / tensorlib.shape(self.samples)[0]
         )
 
@@ -443,22 +444,15 @@ class EmpiricalDistribution(object):
             Float: The expected value of the test statistic.
         """
 
-        if self.expected is not None:
-            # for tmu 'nsigma' are switched on purpose
-            # -2 <-> 2
-            # -1 <-> 1
-            # bc for qmu nsigma of cdf is switched wrt nsigma of mu_hat
-            # works only for nsigma in [-2, -1, 0, 1, 2]
-            # no interpolation
-            return(self.expected[2 - nsigma])
-
         tensorlib, _ = get_backend()
         import numpy as np
 
         # TODO: tensorlib.percentile function
         # c.f. https://github.com/scikit-hep/pyhf/pull/817
-        return np.percentile(
-            self.samples, tensorlib.normal_cdf(nsigma) * 100, interpolation="linear"
+        return abs(
+            np.percentile(
+                self.samples, tensorlib.normal_cdf(nsigma) * 100, interpolation="linear"
+            )
         )
 
 # import logging
@@ -650,20 +644,22 @@ class ToyCalculator(object):
             else:
                 signal_muhatbhat.append(muhatbhat)
                 signal_teststat.append(teststat_out)
+
+        signal_teststat = tensorlib.astensor(signal_teststat)
+
         if self.return_fitted_pars:
             self.sig_bkg_pars.append(tensorlib.astensor(signal_muhatbhat))
             if not self.bootstrap:
                 self.sig_bkg_pars_fixed_poi.append(tensorlib.astensor(signal_mubhathat))
         if self.return_dist:
-            self.sig_bkg_teststat_dist.append(tensorlib.astensor(signal_teststat))
+            self.sig_bkg_teststat_dist.append(signal_teststat)
 
-        # calculate expected
-        expected = None
+        # in order to calculate expected with non monotonous test statistic tmu
         if self.test_statistic == 'tmu':
             muhats = tensorlib.astensor(signal_muhatbhat)[:, self.pdf.config.poi_index]
-            arg_percentiles = [self.arg_percentile(muhats, tensorlib.normal_cdf(nsigma) * 100) for nsigma in np.arange(-2, 3)]
-            expected = [tensorlib.astensor(signal_teststat).flatten()[idx] for idx in arg_percentiles]
-        return EmpiricalDistribution(tensorlib.astensor(signal_teststat), expected)
+            muhats_gt_poi_test = muhats > poi_test
+            signal_teststat *= ~muhats_gt_poi_test * 1 + muhats_gt_poi_test * -1
+        return EmpiricalDistribution(signal_teststat)
 
     def bkg_dist_calc(self, poi_test, bkg_pars, fixed):
         tensorlib, optimizer = get_backend()
@@ -714,6 +710,8 @@ class ToyCalculator(object):
                 bkg_muhatbhat.append(muhatbhat)
                 bkg_teststat.append(teststat_out)
 
+        bkg_teststat = tensorlib.astensor(bkg_teststat).flatten()
+
         if first_run:
             self.lhood_vals = tensorlib.astensor(lhood_vals)  # independent of poi_test if bkg_sample is reused
             self.bkg_pars_reused = tensorlib.astensor(bkg_muhatbhat)  # independent of poi_test if bkg_sample is reused
@@ -723,18 +721,17 @@ class ToyCalculator(object):
             if not self.bootstrap:
                 self.bkg_pars_fixed_poi.append(tensorlib.astensor(bkg_mubhathat))
         if self.return_dist:
-            self.bkg_teststat_dist.append(tensorlib.astensor(bkg_teststat))
+            self.bkg_teststat_dist.append(bkg_teststat)
 
-        # calculate expected
-        expected = None
+        # in order to calculate expected with non monotonous test statistic tmu
         if self.test_statistic == 'tmu':
             if self.reuse_bkg_sample:
                 muhats = self.bkg_pars_reused[:, self.pdf.config.poi_index]
             else:
                 muhats = tensorlib.astensor(bkg_muhatbhat)[:, self.pdf.config.poi_index]
-            arg_percentiles = [self.arg_percentile(muhats, tensorlib.normal_cdf(nsigma) * 100) for nsigma in np.arange(-2, 3)]
-            expected = [tensorlib.astensor(bkg_teststat).flatten()[idx] for idx in arg_percentiles]
-        return EmpiricalDistribution(tensorlib.astensor(bkg_teststat), expected)
+            muhats_gt_poi_test = muhats > poi_test
+            bkg_teststat *= ~muhats_gt_poi_test * 1 + muhats_gt_poi_test * -1
+        return EmpiricalDistribution(bkg_teststat)
 
     def arg_percentile(self, a, q):
         idx = q / 100 * (len(a) - 1)
@@ -852,6 +849,7 @@ class AsymptoticTestStatDistributionCDF(object):
         return(1 - self.cdf(value))
 
     def expected_value(self, nsigma):
+        # gives expected value of teststatistic, in case of t_tilde this is not the expected value of the estimator (non-monotonous)
         tensorlib, _ = get_backend()
         return self.ppf(tensorlib.normal_cdf(0 + nsigma))
 
