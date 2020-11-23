@@ -10,7 +10,7 @@ class minuit_optimizer(OptimizerMixin):
     Optimizer that uses iminuit.Minuit.migrad.
     """
 
-    __slots__ = ['name', 'errordef', 'steps']
+    __slots__ = ['name', 'errordef', 'steps', 'strategy', 'tolerance']
 
     def __init__(self, *args, **kwargs):
         """
@@ -27,10 +27,14 @@ class minuit_optimizer(OptimizerMixin):
         Args:
             errordef (:obj:`float`): See minuit docs. Default is 1.0.
             steps (:obj:`int`): Number of steps for the bounds. Default is 1000.
+            strategy (:obj:`int`): See :attr:`iminuit.Minuit.strategy`. Default is None.
+            tolerance (:obj:`float`): tolerance for termination. See specific optimizer for detailed meaning. Default is 0.1.
         """
         self.name = 'minuit'
         self.errordef = kwargs.pop('errordef', 1)
         self.steps = kwargs.pop('steps', 1000)
+        self.strategy = kwargs.pop('strategy', None)
+        self.tolerance = kwargs.pop('tolerance', 0.1)
         super().__init__(*args, **kwargs)
 
     def _get_minimizer(
@@ -87,17 +91,26 @@ class minuit_optimizer(OptimizerMixin):
         Minimizer Options:
             maxiter (:obj:`int`): maximum number of iterations. Default is 100000.
             return_uncertainties (:obj:`bool`): Return uncertainties on the fitted parameters. Default is off.
+            strategy (:obj:`int`): See :attr:`iminuit.Minuit.strategy`. Default is to configure in response to `do_grad`.
 
         Returns:
             fitresult (scipy.optimize.OptimizeResult): the fit result
         """
         maxiter = options.pop('maxiter', self.maxiter)
         return_uncertainties = options.pop('return_uncertainties', False)
+        # 0: Fast, user-provided gradient
+        # 1: Default, no user-provided gradient
+        strategy = options.pop(
+            'strategy', self.strategy if self.strategy else not do_grad
+        )
+        tolerance = options.pop('tolerance', self.tolerance)
         if options:
             raise exceptions.Unsupported(
                 f"Unsupported options were passed in: {list(options.keys())}."
             )
 
+        minimizer.strategy = strategy
+        minimizer.tol = tolerance
         minimizer.migrad(ncall=maxiter)
         # Following lines below come from:
         # https://github.com/scikit-hep/iminuit/blob/22f6ed7146c1d1f3274309656d8c04461dde5ba3/src/iminuit/_minimize.py#L106-L125
@@ -113,6 +126,8 @@ class minuit_optimizer(OptimizerMixin):
         n = len(x0)
         hess_inv = default_backend.ones((n, n))
         if minimizer.valid:
+            # Extra call to hesse() after migrad() is always needed for good error estimates. If you pass a user-provided gradient to MINUIT, convergence is faster.
+            minimizer.hesse()
             hess_inv = minimizer.np_covariance()
 
         unc = None
