@@ -129,6 +129,7 @@ def hypotest(
             Only returned when ``return_expected_set`` is ``True``.
 
     """
+    tensorlib, _ = get_backend()
 
     if not sb_dist_calc and not b_dist_calc:
         calc = calc or utils.create_calculator(
@@ -148,9 +149,8 @@ def hypotest(
 
     CLsb = sig_plus_bkg_distribution.pvalue(teststat)
     CLb = b_only_distribution.pvalue(teststat)
-    CLs = CLsb / CLb
+    CLs = tensorlib.where((CLb == 0) & (CLsb != 0), 1.0,  CLsb / CLb)
 
-    tensorlib, _ = get_backend()
     # Ensure that all CL values are 0-d tensors
     CLsb, CLb, CLs = (
         tensorlib.astensor(CLsb),
@@ -165,15 +165,13 @@ def hypotest(
         CLs_exp = []
         CLsb_exp = []
         for n_sigma in [2, 1, 0, -1, -2]:
-
             expected_bonly_teststat = b_only_distribution.expected_value(n_sigma)
 
-            CLs = sig_plus_bkg_distribution.pvalue(
-                expected_bonly_teststat
-            ) / b_only_distribution.pvalue(expected_bonly_teststat)
-            CLs_exp.append(tensorlib.astensor(CLs))
-
             CLsb = sig_plus_bkg_distribution.pvalue(expected_bonly_teststat)
+            CLb = b_only_distribution.pvalue(expected_bonly_teststat)
+            CLs = tensorlib.where((CLb == 0) & (CLsb != 0), 1.0,  CLsb / CLb)
+
+            CLs_exp.append(tensorlib.astensor(CLs))
             CLsb_exp.append(tensorlib.astensor(CLsb))
         if return_expected:
             _returns.append(CLs_exp[2])
@@ -186,10 +184,10 @@ def hypotest(
         n_sigma = 0
         expected_bonly_teststat = b_only_distribution.expected_value(n_sigma)
 
-        CLs = sig_plus_bkg_distribution.pvalue(
-            expected_bonly_teststat
-        ) / b_only_distribution.pvalue(expected_bonly_teststat)
         CLsb = sig_plus_bkg_distribution.pvalue(expected_bonly_teststat)
+        CLb = b_only_distribution.pvalue(expected_bonly_teststat)
+        CLs = tensorlib.where((CLb == 0) & (CLsb != 0), 1.0,  CLsb / CLb)
+
         _returns.append(tensorlib.astensor(CLs))
         if return_CLsb:
             _returns.append([CLsb])
