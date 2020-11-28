@@ -479,6 +479,7 @@ class ToyCalculator(object):
         return_dist=False,
         test_statistic='tmu',
         tilde=True,
+        bkg_sample=None,
     ):
         """
         Toy-based Calculator.
@@ -524,7 +525,7 @@ class ToyCalculator(object):
         self.return_dist = return_dist
         self.fix_auxdata = fix_auxdata
 
-        self.bkg_sample = None
+        self.bkg_sample = bkg_sample
         self.lhood_vals = None
         self.bkg_pars_reused = None
         self.bkg_pars = []
@@ -599,10 +600,14 @@ class ToyCalculator(object):
             signal_sample = tensorlib.concatenate([signal_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
 
         bkg_pars[self.pdf.config.poi_index] = 0.0
-        bkg_pdf = self.pdf.make_pdf(tensorlib.astensor(bkg_pars))
-        self.bkg_sample = self.bkg_sample if (self.bkg_sample is not None and self.reuse_bkg_sample) else bkg_pdf.sample(sample_shape)
+        if self.bkg_sample is not None and self.reuse_bkg_sample:
+            self.bkg_sample = tensorlib.astensor(self.bkg_sample)
+        else:
+            bkg_pdf = self.pdf.make_pdf(tensorlib.astensor(bkg_pars))
+            self.bkg_sample = bkg_pdf.sample(sample_shape)
+
         if self.fix_auxdata:
-            self.bkg_sample = tensorlib.concatenate([self.bkg_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.ntoys)], axis=1)
+            self.bkg_sample = tensorlib.concatenate([self.bkg_sample[:, :-self.pdf.config.nauxdata], tensorlib.astensor([self.pdf.config.auxdata] * self.bkg_sample.shape[0])], axis=1)
 
         if self.return_fitted_pars or self.return_dist:
             self.poi_list.append(poi_test)
