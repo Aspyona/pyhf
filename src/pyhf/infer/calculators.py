@@ -854,7 +854,7 @@ class AsymptoticTestStatDistributionCDF(object):
         return(1 - self.cdf(value))
 
     def expected_value(self, nsigma):
-        # gives expected value of teststatistic, in case of t_tilde this is not the expected value of the estimator (non-monotonous)
+        # gives expected value of teststatistic, in case of t or t_tilde this is not the expected value of the estimator (non-monotonous)
         tensorlib, _ = get_backend()
         return self.ppf(tensorlib.normal_cdf(0 + nsigma))
 
@@ -898,14 +898,29 @@ class AsymptoticCalculatorCDF(object):
             self.teststat_func = qmu_tilde if self.tilde else qmu
 
     def distributions(self, poi_test, b_dist=True, sb_dist=True):
-        if self.use_asimov and (self.tilde or b_dist):
-            self.calc_asimov(poi_test)
+        if self.use_asimov:
             sigma_poi_test = None
+            if (self.tilde or b_dist):  # asimov not needed for sb_dist and notilde
+                self.calc_asimov(poi_test)
         else:
             if sb_dist:
-                sigma_poi_test = calc_sigma_fit(self.data, self.pdf, poi_test)
+                sigma_poi_test = calc_sigma_fit(
+                    self.data,
+                    self.pdf,
+                    poi_test,
+                    par_bounds=self.par_bounds,
+                    init_pars=self.init_pars,
+                    fixed_params=self.fixed_params,
+                )
             if b_dist:
-                self.sigma_poi_null = self.sigma_poi_null if self.sigma_poi_null else calc_sigma_fit(self.data, self.pdf, 0)
+                self.sigma_poi_null = self.sigma_poi_null if self.sigma_poi_null else calc_sigma_fit(
+                    self.data,
+                    self.pdf,
+                    0,
+                    par_bounds=self.par_bounds,
+                    init_pars=self.init_pars,
+                    fixed_params=self.fixed_params,
+                )
 
         if sb_dist:
             sb_dist = AsymptoticTestStatDistributionCDF(data=self.data,
@@ -995,8 +1010,8 @@ def tmu_cdf(tmu_val, mu, mu_prime, data, model, sigma=None, asimov_val=None, use
                 else:
                     above = (~below_thr) * (phi((tmu_val - asimov_val) / (2 * sqrt(asimov_val))) - 1)
     else:
-        below_thr = tmu_val <= (mu**2 / sigma**2) if tilde else 1.0
         sigma = sigma if sigma else calc_sigma_fit(data, model, mu_prime)
+        below_thr = tmu_val <= (mu**2 / sigma**2) if tilde else 1.0
         common = phi(sqrt(tmu_val) + (mu - mu_prime) / sigma)
         below = (below_thr) * (phi(sqrt(tmu_val) - (mu - mu_prime) / sigma) - 1)
         if tilde:
@@ -1049,19 +1064,25 @@ def qmu_cdf(qmu_val, mu, mu_prime, data, model, sigma=None, asimov_val=None, use
     return(total)
 
 
-def calc_sigma_fit(data, model, mu_prime):
+def calc_sigma_fit(data, model, mu_prime, par_bounds=None, init_pars=None, fixed_params=None):
     backend = get_backend()
 
-    init_pars = model.config.suggested_init()
-    pars_pdf = model.config.suggested_init()
-    pars_pdf[model.config.poi_index] = mu_prime
-    unbounded_bounds = model.config.suggested_bounds()
-    unbounded_bounds[model.config.poi_index] = (-25, 25)
-    bounded_bounds = model.config.suggested_bounds()
-    bounded_bounds[model.config.poi_index] = (0, 25)
-    fixed_params = model.config.suggested_fixed()
+    if par_bounds is None:
+        par_bounds = model.config.suggested_bounds()
+        par_bounds[model.config.poi_index] = (0, 25)  # bounded by default
+        unbounded_bounds = model.config.suggested_bounds()
+        unbounded_bounds[model.config.poi_index] = (-25, 25)
+    else:
+        unbounded_bounds = par_bounds.copy()
+        unbounded_bounds[model.config.poi_index] = (-25, par_bounds[model.config.poi_index][1])
 
-    bestfit_nuisance_asimov = fixed_poi_fit(mu_prime, data, model, init_pars, bounded_bounds, fixed_params)
+    fixed_params = fixed_params or model.config.suggested_fixed()
+    init_pars = init_pars or model.config.suggested_init()
+
+    pars_pdf = init_pars.copy() or model.config.suggested_init()
+    pars_pdf[model.config.poi_index] = mu_prime
+
+    bestfit_nuisance_asimov = fixed_poi_fit(mu_prime, data, model, init_pars, par_bounds, fixed_params)
     asimov_data = model.expected_data(bestfit_nuisance_asimov)
 
     set_backend("numpy", minuit_optimizer(verbose=False))
