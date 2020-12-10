@@ -1,3 +1,6 @@
+._sync*
+.directory
+
 MANIFEST
 build
 dist
